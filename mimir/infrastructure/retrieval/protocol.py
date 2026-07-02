@@ -21,7 +21,7 @@ class MemoryScorer(Protocol):
         Higher scores mean more relevant. Memories that cannot be scored should
         be omitted from the result.
         """
-        ...
+        raise NotImplementedError
 
 
 class FusionStrategy(Protocol):
@@ -32,7 +32,7 @@ class FusionStrategy(Protocol):
 
         The caller is responsible for normalizing or sorting the returned scores.
         """
-        ...
+        raise NotImplementedError
 
 
 class RankFusion:
