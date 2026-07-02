@@ -19,6 +19,13 @@ from mimir.core.config import MimirConfig
 from mimir.core.mimir import Mimir
 from mimir.domain.model import Memory, Message
 from mimir.domain.model.engine import EmbeddingEngine
+
+__all__ = [
+    "AgentMemoryInterface",
+    "InMemoryAgentAdapter",
+    "Memory",
+    "Message",
+]
 from mimir.infrastructure.lifecycle import (
     LifecycleScorer,
     ensure_lifecycle_metadata,
@@ -72,6 +79,15 @@ class AgentMemoryInterface(ABC):
     def observe(self, messages: list[Message]) -> None:
         """Observe a batch of messages and update memory."""
 
+    @property
+    @abstractmethod
+    def memory_count(self) -> int:
+        """Return the number of memories currently held."""
+
+    @abstractmethod
+    def memories_state(self) -> list[dict[str, Any]]:
+        """Return a JSON-serializable snapshot of the working memory buffer."""
+
     @abstractmethod
     def recall(
         self,
@@ -84,6 +100,16 @@ class AgentMemoryInterface(ABC):
     @abstractmethod
     def consolidate(self) -> None:
         """Explicitly reinforce recent or important memories."""
+
+    def encode(self, texts: list[str]) -> list[list[float]]:
+        """Return embeddings for the given texts.
+
+        The base interface provides a default implementation that raises
+        ``NotImplementedError`` so that existing subclasses do not break when
+        new optional capabilities are added. Subclasses that need embeddings
+        should override this method.
+        """
+        raise NotImplementedError("encode() is not implemented by this adapter")
 
     @abstractmethod
     def checkpoint(self, path: str | Path) -> None:
@@ -352,6 +378,11 @@ class InMemoryAgentAdapter(AgentMemoryInterface):
     def learn(self, texts: list[str], importance: float = 1.0) -> dict[str, Any]:
         """Run a learning step on the given texts."""
         return self._mimir.learn(texts, importance=importance)
+
+    def encode(self, texts: list[str]) -> list[list[float]]:
+        """Return embeddings for the given texts."""
+        tensors = self._mimir.encode(texts)
+        return [_serialize_embedding(t) for t in tensors]
 
     def checkpoint(self, path: str | Path) -> None:
         """Persist Mimir state and memory buffer."""

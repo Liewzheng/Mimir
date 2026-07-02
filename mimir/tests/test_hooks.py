@@ -304,3 +304,68 @@ def test_invalid_json_is_ignored() -> None:
     finally:
         sys.stdin = old_stdin
         sys.stdout = old_stdout
+
+
+def test_stop_redacts_secrets_before_storing(tmp_path: Path) -> None:
+    payload = {
+        "hook_event_name": "Stop",
+        "messages": [
+            {"role": "user", "content": "my api key is sk-1234567890abcdef"},
+        ],
+    }
+    base_dir = tmp_path / ".mimir"
+    code, _stdout, _stderr = _run_hook(
+        payload,
+        base_dir=base_dir,
+        extra_args=["--workspace-path", str(tmp_path / "workspace")],
+    )
+    assert code == 0
+
+    session = SessionManager(
+        backend="fake",
+        workspace_path=tmp_path / "workspace",
+        base_dir=base_dir,
+    )
+    try:
+        state = session.adapter.memories_state()
+        assert len(state) == 1
+        assert "sk-1234567890abcdef" not in state[0]["text"]
+        assert "[REDACTED]" in state[0]["text"]
+    finally:
+        session.close()
+
+
+def test_stop_skips_duplicates_of_existing_memories(tmp_path: Path) -> None:
+    base_dir = tmp_path / ".mimir"
+    workspace_path = tmp_path / "workspace"
+    session = SessionManager(
+        backend="fake",
+        workspace_path=workspace_path,
+        base_dir=base_dir,
+    )
+    session.store("I prefer Python for backends")
+    session.close()
+
+    payload = {
+        "hook_event_name": "Stop",
+        "messages": [
+            {"role": "user", "content": "I prefer Python for backends"},
+        ],
+    }
+    code, _stdout, _stderr = _run_hook(
+        payload,
+        base_dir=base_dir,
+        extra_args=["--workspace-path", str(workspace_path)],
+    )
+    assert code == 0
+
+    session = SessionManager(
+        backend="fake",
+        workspace_path=workspace_path,
+        base_dir=base_dir,
+    )
+    try:
+        # The duplicate message from the hook should not add a second memory.
+        assert session.adapter.memory_count == 1
+    finally:
+        session.close()

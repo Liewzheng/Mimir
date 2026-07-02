@@ -37,6 +37,12 @@ second brain that gets sharper the more you use it.
 | **Offline** | Needs cloud API or hosted vector DB | Runs locally with llama-server, sentence-transformers, or fake backend |
 | **Inference** | Calls DB/index on every recall | Pure matrix operation, no locks, predictable latency |
 | **Hook noise** | Stores every short reply, including "ok" and "continue" | Language-aware small-talk filtering + importance gating |
+| **Security** | Stores secrets verbatim | Automatic API key / token / password redaction |
+| **Project context** | Manual copy-paste of instruction files | Auto-discovers `AGENTS.md`, `CLAUDE.md`, `.cursorrules` |
+| **Quality** | Duplicate memories accumulate | Duplicate blocking + contradiction hints at store time |
+
+Secret redaction patterns can be customized or disabled entirely via
+`MimirConfig(redaction_patterns=...)` (`None` = defaults, `[]` = disabled).
 
 ---
 
@@ -115,7 +121,27 @@ mimir mcp --backend sentence-transformer
 }
 ```
 
-#### Auto-recall and auto-learn with hooks
+#### One-shot setup with `mimir setup`
+
+Instead of editing config files by hand, you can install hooks automatically:
+
+```bash
+mimir setup kimi-code
+mimir setup claude-code
+mimir setup codex
+```
+
+Use `--base-dir` to write the configuration somewhere other than the agent's
+default config directory (useful for custom dotfiles layouts or CI):
+
+```bash
+mimir setup kimi-code --base-dir ~/my-configs/kimi-code
+```
+
+This writes the correct hook definitions for each agent CLI and is safe to run
+multiple times.
+
+#### Manual hook configuration
 
 ```toml
 # ~/.kimi-code/config.toml
@@ -129,6 +155,10 @@ event = "Stop"
 command = "python3 -m mimir.hooks.mimir_turn"
 timeout = 10
 ```
+
+Both the MCP `store()` and the hook `Stop` path apply the same redaction,
+filtering, and duplicate-blocking pipeline, so secrets are never persisted
+regardless of how a memory is captured.
 
 See [`docs/mcp-user-guide.md`](docs/mcp-user-guide.md) for the full hook guide.
 
@@ -177,7 +207,7 @@ compressed set of typical examples that continuously updates itself.
 
 | Tool | Purpose |
 |---|---|
-| `store(text, importance=1.0)` | Store and learn from text |
+| `store(text, importance=1.0)` | Store and learn from text. Secrets are redacted before storage; the response `text` field is the redacted form. |
 | `recall(query, top_k=5, min_score=0.0)` | Hybrid vector + BM25 recall, reranked by lifecycle metadata |
 | `consolidate()` | Consolidate the working memory buffer |
 | `forget()` | Clear the current session's working memory |
@@ -185,7 +215,45 @@ compressed set of typical examples that continuously updates itself.
 | `restore(name)` | Restore to a named checkpoint |
 | `status()` | Show session stats |
 
+`store()` may also include `reason`, `similar_memory`, or `contradictions` in its
+response when a memory is rejected or appears to contradict an existing memory.
+
 ---
+
+## Quality Gate
+
+`store()` runs a lightweight quality gate before learning:
+
+- **Duplicate blocking**: near-duplicate memories (cosine similarity ≥ 0.95) are
+  rejected instead of accumulating.
+- **Contradiction hints**: simple negation/polarity checks flag pairs like
+  "I use Python" vs "I don't use Python". The memory is still stored, but the
+  result includes the hint so the agent can ask before acting on stale context.
+
+Both checks can be disabled via `MimirConfig`:
+
+```python
+MimirConfig(quality_gate_enabled=False)
+```
+
+Or tune the thresholds:
+
+```python
+MimirConfig(
+    quality_gate_enabled=True,
+    quality_gate_duplicate_threshold=0.95,
+    quality_gate_contradiction_threshold=0.85,
+)
+```
+
+### Other useful configuration fields
+
+| Field | Default | Purpose |
+|---|---|---|
+| `redaction_enabled` | `True` | Enable secret redaction |
+| `redaction_patterns` | `None` | Custom regex list (`None` = defaults, `[]` = disabled) |
+| `project_context_enabled` | `True` | Auto-ingest `AGENTS.md` / `CLAUDE.md` / `.cursorrules` |
+| `project_context_importance` | `1.5` | Importance assigned to project context memories |
 
 ## Programming Interface
 
@@ -208,6 +276,13 @@ memories = adapter.recall("Python 排序", top_k=3)
 
 print(adapter.memory_count)
 adapter.clear_memories()
+```
+
+`AgentMemoryInterface` also exposes `encode(texts)` to retrieve embeddings for a
+list of texts, which is useful for custom duplicate checks or integrations:
+
+```python
+embeddings = adapter.encode(["hello world", "goodbye world"])
 ```
 
 See [`docs/agent-integration.md`](docs/agent-integration.md) for the adapter API.
@@ -239,9 +314,13 @@ Mimir is currently **v0.2.0**.
 - [x] MCP server + Agent CLI hooks
 - [x] BM25 + lifecycle hybrid recall
 - [x] Multi-language small-talk filtering for automatic hook capture
+- [x] Secret redaction for API keys, tokens, and passwords
+- [x] Project context discovery (`AGENTS.md`, `CLAUDE.md`, `.cursorrules`)
+- [x] `mimir setup <agent>` one-shot configuration
+- [x] Duplicate blocking and contradiction hints
 - [ ] Async embedding queue
 - [ ] SQLite-backed memory metadata
-- [ ] Project context discovery
+- [ ] HITL preview before storing high-impact memories
 
 See [`docs/roadmap.md`](docs/roadmap.md) for the full roadmap.
 

@@ -1,10 +1,12 @@
 """Tests for the Mimir MCP session manager."""
 
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
+from mimir.infrastructure.redaction import Redactor
 from mimir.mcp.session import SessionManager
 
 
@@ -81,6 +83,86 @@ def test_checkpoint_invalid_name(session: SessionManager) -> None:
 def test_restore_missing_checkpoint(session: SessionManager) -> None:
     with pytest.raises(FileNotFoundError, match="Checkpoint 'missing' not found"):
         session.restore("missing")
+
+
+def test_store_blocks_duplicates(session: SessionManager) -> None:
+    session.store("I like Python")
+    result = session.store("I like Python")
+    assert result["stored"] is False
+    assert result["reason"] == "duplicate"
+    assert "similar_memory" in result
+    assert session.adapter.memory_count == 1
+
+
+def test_store_reports_contradiction_hint(session: SessionManager) -> None:
+    session.store("I use Python for backends")
+    result = session.store("I do not use Python for backends")
+    assert result["stored"] is True
+    assert "contradictions" in result
+    assert len(result["contradictions"]) >= 1
+
+
+def test_store_duplicate_can_be_disabled(session: SessionManager) -> None:
+    session.config = replace(session.config, quality_gate_enabled=False)
+    session.store("I like Python")
+    result = session.store("I like Python")
+    assert result["stored"] is True
+    assert session.adapter.memory_count == 2
+
+
+def test_store_contradiction_hints_can_be_disabled(session: SessionManager) -> None:
+    session.config = replace(session.config, quality_gate_enabled=False)
+    session.store("I use Python for backends")
+    result = session.store("I do not use Python for backends")
+    assert result["stored"] is True
+    assert "contradictions" not in result
+
+
+def test_store_rejects_empty_and_non_string_input(session: SessionManager) -> None:
+    assert session.store("")["stored"] is False
+    assert session.store(None)["stored"] is False  # type: ignore[arg-type]
+    assert session.store(123)["stored"] is False  # type: ignore[arg-type]
+    assert session.adapter.memory_count == 0
+
+
+def test_store_redacts_secrets(session: SessionManager) -> None:
+    raw = "my key is sk-1234567890abcdef"
+    result = session.store(raw)
+    assert result["stored"] is True
+    assert "sk-1234567890abcdef" not in result["text"]
+    assert "[REDACTED]" in result["text"]
+    state = session.adapter.memories_state()
+    assert state[0]["text"] == result["text"]
+
+
+def test_project_context_discovery_ingests_files(session: SessionManager) -> None:
+    session.workspace_path.mkdir(parents=True, exist_ok=True)
+    agents_md = session.workspace_path / "AGENTS.md"
+    agents_md.write_text("Use Python for scripts.", encoding="utf-8")
+
+    session2 = SessionManager(
+        backend="fake",
+        workspace_path=session.workspace_path,
+        base_dir=session.workspace_dir.parent,
+    )
+    texts = [m["text"] for m in session2.adapter.memories_state()]
+    assert any("Project Context" in t for t in texts)
+    assert any("Use Python for scripts" in t for t in texts)
+
+
+def test_store_custom_redaction_pattern(session: SessionManager) -> None:
+    session.config = replace(
+        session.config,
+        redaction_patterns=[r"secret-\w+"],
+    )
+    session.redactor = Redactor(
+        enabled=session.config.redaction_enabled,
+        patterns=session.config.redaction_patterns,
+    )
+    result = session.store("my code is secret-abc123")
+    assert result["stored"] is True
+    assert "secret-abc123" not in result["text"]
+    assert "[REDACTED]" in result["text"]
 
 
 def test_status_reports(session: SessionManager) -> None:
