@@ -45,7 +45,7 @@ Memory(
 
 - `text`: 记忆文本内容。
 - `embedding`: 记忆的嵌入向量，以 `list[float]` 形式返回。
-- `score`: 与 query 的 cosine similarity（0~1）。
+- `score`: 混合相关度分数（0~1）。默认融合向量 cosine similarity 与 BM25 关键词匹配，并用生命周期元数据重排；可通过 `use_bm25` 和 `use_lifecycle` 关闭。
 - `created_at`: 记忆创建时间。
 - `source`: 来源 `Message`（可选）。
 - `metadata`: 附加字段。
@@ -55,7 +55,7 @@ Memory(
 | 方法 | 说明 |
 |---|---|
 | `observe(messages: list[Message])` | 观察一组消息，编码并写入工作记忆。 |
-| `recall(query: str, top_k=5, min_score=0.0)` | 根据 query 检索最相关的记忆。 |
+| `recall(query: str, top_k=5, min_score=0.0, use_bm25=True, use_lifecycle=True, lifecycle_weight=0.3)` | 混合向量 + BM25 检索，并可用生命周期元数据（recency、importance、access）重排。 |
 | `consolidate()` | 主动巩固当前工作记忆中的所有内容。 |
 | `checkpoint(path)` | 持久化 Mimir 状态。 |
 | `restore(path)` | 从检查点恢复 Mimir 状态；工作记忆会被清空。 |

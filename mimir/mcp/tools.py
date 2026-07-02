@@ -50,13 +50,15 @@ def recall(
 ) -> str:
     """Retrieve memories most relevant to the query.
 
-    Results are ranked by cosine similarity against the query embedding. If no
-    memory reaches `min_score`, an empty result list is returned.
+    Results are ranked by a hybrid score that combines vector cosine similarity
+    with BM25 keyword overlap, then reranks by lifecycle metadata (recency,
+    importance, access patterns). If no memory reaches `min_score`, an empty
+    result list is returned.
 
     Args:
         query: The query text. Empty queries return no results.
         top_k: Maximum number of memories to return (default 5).
-        min_score: Minimum cosine-similarity score, 0.0 to 1.0 (default 0.0,
+        min_score: Minimum fused relevance score, 0.0 to 1.0 (default 0.0,
             no filtering). Raise this to exclude low-relevance matches.
 
     Returns:

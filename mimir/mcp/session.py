@@ -14,9 +14,10 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
-from mimir.adapters.agents import InMemoryAgentAdapter, Message
+from mimir.adapters.agents import InMemoryAgentAdapter
 from mimir.application.factories import create_embedding_engine
 from mimir.core.config import MimirConfig
+from mimir.domain.model import Message
 
 logger = logging.getLogger(__name__)
 
@@ -281,10 +282,15 @@ class SessionManager:
     def store(self, text: str, importance: float = 1.0) -> dict[str, Any]:
         """Store a text in memory and learn from it.
 
-    Non-empty strings only; empty text is a no-op.
-    """
+        Non-empty strings only; empty text is a no-op. After learning, the
+        session checkpoint and memories sidecar are persisted so that agent CLI
+        hooks can recall the new memory immediately.
+        """
+        if not text or not isinstance(text, str):
+            return {"stored": False, "text": text, "memory_count": self.adapter.memory_count}
         self.adapter.observe([Message(role="user", content=text)])
         report = self.adapter.learn([text], importance=importance)
+        self._save()
         return {
             "stored": True,
             "text": text,
