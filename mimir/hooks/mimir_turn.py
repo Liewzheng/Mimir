@@ -24,9 +24,10 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from mimir.adapters.agents import InMemoryAgentAdapter, Message
+from mimir.adapters.agents import InMemoryAgentAdapter
 from mimir.application.factories import create_embedding_engine
 from mimir.core.config import MimirConfig
+from mimir.domain.model import Message
 from mimir.mcp.session import _detect_workspace_path, _workspace_hash
 
 logger = logging.getLogger(__name__)

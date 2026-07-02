@@ -177,7 +177,7 @@ compressed set of typical examples that continuously updates itself.
 | Tool | Purpose |
 |---|---|
 | `store(text, importance=1.0)` | Store and learn from text |
-| `recall(query, top_k=5, min_score=0.0)` | Retrieve relevant memories |
+| `recall(query, top_k=5, min_score=0.0)` | Hybrid vector + BM25 recall, reranked by lifecycle metadata |
 | `consolidate()` | Consolidate the working memory buffer |
 | `forget()` | Clear the current session's working memory |
 | `checkpoint(name)` | Save a named checkpoint |
@@ -236,7 +236,7 @@ Mimir is currently **v0.2.0**.
 - [x] Top-k sparse prototype activation
 - [x] EventBus + PredictionPolicy + surprise score
 - [x] MCP server + Agent CLI hooks
-- [ ] BM25/keyword fallback for recall
+- [x] BM25 + lifecycle hybrid recall
 - [ ] Async embedding queue
 - [ ] SQLite-backed memory metadata
 - [ ] Project context discovery

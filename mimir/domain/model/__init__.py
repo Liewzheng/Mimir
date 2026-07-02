@@ -1,3 +1,5 @@
 """Domain model package."""
 
-__all__ = []
+from mimir.domain.model.memory import Memory, Message
+
+__all__ = ["Memory", "Message"]

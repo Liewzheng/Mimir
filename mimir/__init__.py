@@ -3,12 +3,11 @@
 from mimir.adapters.agents import (
     AgentMemoryInterface,
     InMemoryAgentAdapter,
-    Memory,
-    Message,
 )
 from mimir.application.factories import create_mimir
 from mimir.core.config import MimirConfig
 from mimir.core.mimir import Mimir
+from mimir.domain.model import Memory, Message
 
 __all__ = [
     "Mimir",
@@ -19,4 +18,4 @@ __all__ = [
     "Message",
     "Memory",
 ]
-__version__ = "0.2.0.dev2"
+__version__ = "0.2.0"

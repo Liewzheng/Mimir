@@ -8,7 +8,6 @@ their sessions without depending on Mimir internals.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, cast
@@ -18,7 +17,18 @@ import torch
 from mimir.application.factories import create_mimir
 from mimir.core.config import MimirConfig
 from mimir.core.mimir import Mimir
+from mimir.domain.model import Memory, Message
 from mimir.domain.model.engine import EmbeddingEngine
+from mimir.infrastructure.lifecycle import (
+    LifecycleScorer,
+    ensure_lifecycle_metadata,
+)
+from mimir.infrastructure.lifecycle.metadata import MemoryMetadata
+from mimir.infrastructure.retrieval import (
+    BM25Scorer,
+    RankFusion,
+    VectorScorer,
+)
 
 
 def _iso(dt: datetime) -> str:
@@ -48,28 +58,6 @@ def _deserialize_embedding(embedding: Any) -> Any:
     so callers can add future formats without scattering type checks.
     """
     return embedding
-
-
-@dataclass
-class Message:
-    """A single message in an agent conversation."""
-
-    role: str  # e.g. "user", "assistant", "system", "tool"
-    content: str
-    metadata: dict[str, Any] = field(default_factory=dict)
-    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
-
-
-@dataclass
-class Memory:
-    """A retrieved memory with relevance score and optional source messages."""
-
-    text: str
-    embedding: list[float]
-    score: float
-    created_at: datetime
-    source: Message | None = None
-    metadata: dict[str, Any] = field(default_factory=dict)
 
 
 class AgentMemoryInterface(ABC):
@@ -201,6 +189,10 @@ class InMemoryAgentAdapter(AgentMemoryInterface):
 
         If ``learn_on_observe`` is enabled, each message text is also passed
         to ``Mimir.learn`` so the prototype matrix adapts to the session.
+
+        Each memory is annotated with lifecycle metadata (importance, access
+        count, content hash) to support deduplication and lifecycle scoring
+        during recall.
         """
         if not messages:
             return
@@ -222,6 +214,7 @@ class InMemoryAgentAdapter(AgentMemoryInterface):
                 source=msg,
                 metadata={"role": msg.role, **msg.metadata},
             )
+            ensure_lifecycle_metadata(memory)
             self._memories.append(memory)
 
         if self._learn_on_observe:
@@ -236,38 +229,113 @@ class InMemoryAgentAdapter(AgentMemoryInterface):
         query: str,
         top_k: int = 5,
         min_score: float = 0.0,
+        use_bm25: bool = True,
+        use_lifecycle: bool = True,
+        lifecycle_weight: float = 0.3,
     ) -> list[Memory]:
-        """Return the top-k memories most similar to the query."""
+        """Return the top-k memories most relevant to the query.
+
+        By default this performs a hybrid retrieval: vector cosine similarity
+        is fused with BM25 keyword matching via Reciprocal Rank Fusion (RRF),
+        and the result is reranked by lifecycle metadata (recency, importance,
+        access count). Pass ``use_bm25=False`` or ``use_lifecycle=False`` to
+        fall back to the previous pure-vector behavior.
+
+        Args:
+            query: The recall query text.
+            top_k: Maximum number of memories to return.
+            min_score: Minimum fused retrieval score. Applied before lifecycle
+                reranking; memories below this threshold are dropped.
+            use_bm25: Whether to include BM25 keyword scores in the fusion.
+            use_lifecycle: Whether to apply lifecycle reranking.
+            lifecycle_weight: Weight of the lifecycle score in the final blend.
+                0.0 means no lifecycle reranking; 1.0 means lifecycle only.
+
+        Returns:
+            A list of Memory objects sorted by final relevance score.
+        """
         self._validate_text(query, "Recall query")
         if not self._memories:
             return []
 
         query_emb = self._mimir.encode([query])[0]
-        memory_embs = torch.tensor(
-            [m.embedding for m in self._memories],
-            dtype=query_emb.dtype,
-            device=query_emb.device,
-        )
 
-        # Cosine similarity.
-        query_norm = query_emb / torch.linalg.norm(query_emb)
-        memory_norms = memory_embs / torch.linalg.norm(memory_embs, dim=1, keepdim=True)
-        sims = torch.matmul(memory_norms, query_norm).tolist()
+        rankings: list[dict[int, float]] = []
+        vector_scorer = VectorScorer(query_embedding=query_emb)
+        vector_scores = vector_scorer.score(query, self._memories)
+        rankings.append(vector_scores)
 
-        scored = [
-            Memory(
-                text=m.text,
-                embedding=m.embedding,
-                score=score,
-                created_at=m.created_at,
-                source=m.source,
-                metadata=m.metadata,
+        if use_bm25:
+            bm25_scorer = BM25Scorer()
+            bm25_scores = bm25_scorer.score(query, self._memories)
+            if bm25_scores:
+                rankings.append(bm25_scores)
+
+        fusion = RankFusion()
+        fused_scores = fusion.fuse(rankings)
+
+        # RRF scores are ranking-based and not calibrated to [0, 1]. Normalize
+        # so that downstream thresholds (e.g. the hook recall cutoff) and the
+        # lifecycle blend have a consistent, interpretable scale.
+        if fused_scores:
+            max_fused = max(fused_scores.values())
+            min_fused = min(fused_scores.values())
+            span = max_fused - min_fused
+            if span > 0:
+                fused_scores = {
+                    idx: (score - min_fused) / span
+                    for idx, score in fused_scores.items()
+                }
+            else:
+                fused_scores = dict.fromkeys(fused_scores, 1.0)
+
+        lifecycle_scores: dict[int, float] = {}
+        if use_lifecycle:
+            lifecycle_scorer = LifecycleScorer()
+            lifecycle_scores = lifecycle_scorer.score(self._memories)
+
+        # Build candidates, applying min_score to the fused retrieval score.
+        scored: list[tuple[Memory, float]] = []
+        for idx, memory in enumerate(self._memories):
+            retrieval_score = fused_scores.get(idx, 0.0)
+            if retrieval_score < min_score:
+                continue
+
+            final_score = retrieval_score
+            if use_lifecycle and lifecycle_scores:
+                lifecycle_score = lifecycle_scores.get(idx, 0.0)
+                # Normalize lifecycle scores to [0, 1] using the max observed.
+                max_lifecycle = max(lifecycle_scores.values())
+                normalized_lifecycle = (
+                    lifecycle_score / max_lifecycle if max_lifecycle > 0 else 0.0
+                )
+                final_score = (
+                    1.0 - lifecycle_weight
+                ) * retrieval_score + lifecycle_weight * normalized_lifecycle
+
+            meta = memory.metadata.get("lifecycle")
+            if isinstance(meta, dict):
+                meta = MemoryMetadata.from_dict(meta)
+                memory.metadata["lifecycle"] = meta
+            if isinstance(meta, MemoryMetadata):
+                meta.touch()
+
+            scored.append(
+                (
+                    Memory(
+                        text=memory.text,
+                        embedding=memory.embedding,
+                        score=final_score,
+                        created_at=memory.created_at,
+                        source=memory.source,
+                        metadata=memory.metadata,
+                    ),
+                    final_score,
+                )
             )
-            for m, score in zip(self._memories, sims, strict=True)
-            if score >= min_score
-        ]
-        scored.sort(key=lambda m: m.score, reverse=True)
-        return scored[:top_k]
+
+        scored.sort(key=lambda item: item[1], reverse=True)
+        return [memory for memory, _ in scored[:top_k]]
 
     def consolidate(self) -> None:
         """Reinforce all memories currently held in the buffer.
@@ -333,6 +401,10 @@ class InMemoryAgentAdapter(AgentMemoryInterface):
                     "timestamp": _iso(memory.source.timestamp),
                 }
             embedding = _serialize_embedding(memory.embedding)
+            metadata = dict(memory.metadata)
+            lifecycle = metadata.get("lifecycle")
+            if isinstance(lifecycle, MemoryMetadata):
+                metadata["lifecycle"] = lifecycle.to_dict()
             result.append(
                 {
                     "text": memory.text,
@@ -340,7 +412,7 @@ class InMemoryAgentAdapter(AgentMemoryInterface):
                     "score": memory.score,
                     "created_at": _iso(memory.created_at),
                     "source": source,
-                    "metadata": memory.metadata,
+                    "metadata": metadata,
                 }
             )
         return result

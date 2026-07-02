@@ -3,9 +3,8 @@
 from mimir.adapters.agents import (
     AgentMemoryInterface,
     InMemoryAgentAdapter,
-    Memory,
-    Message,
 )
+from mimir.domain.model import Memory, Message
 
 __all__ = [
     "AgentMemoryInterface",
