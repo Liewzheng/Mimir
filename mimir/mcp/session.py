@@ -18,6 +18,7 @@ from mimir.adapters.agents import InMemoryAgentAdapter
 from mimir.application.factories import create_embedding_engine
 from mimir.core.config import MimirConfig
 from mimir.domain.model import Message
+from mimir.infrastructure.filtering import FilterConfig, FilterEngine
 
 logger = logging.getLogger(__name__)
 
@@ -191,6 +192,16 @@ class SessionManager:
             checkpoint_dir=self.checkpoints_dir,
             learn_on_observe=False,
         )
+        self.filter_engine = FilterEngine(
+            FilterConfig(
+                enabled=config.filter_enabled,
+                min_store_length=config.filter_min_store_length,
+                min_hook_length=config.filter_min_hook_length,
+                min_hook_importance=config.filter_min_hook_importance,
+                small_talk_ratio_threshold=config.filter_small_talk_ratio_threshold,
+                user_resource_dir=config.filter_user_resource_dir,
+            )
+        )
 
         self._load_errors: deque[str] = deque(maxlen=_MAX_LOAD_ERRORS)
 
@@ -288,6 +299,14 @@ class SessionManager:
         """
         if not text or not isinstance(text, str):
             return {"stored": False, "text": text, "memory_count": self.adapter.memory_count}
+        result = self.filter_engine.should_store(text, source="mcp")
+        if not result.store:
+            return {
+                "stored": False,
+                "text": text,
+                "memory_count": self.adapter.memory_count,
+                "reason": result.reason,
+            }
         self.adapter.observe([Message(role="user", content=text)])
         report = self.adapter.learn([text], importance=importance)
         self._save()

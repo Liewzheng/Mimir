@@ -36,6 +36,7 @@ second brain that gets sharper the more you use it.
 | **State size** | Often grows with history (SQLite/vector DB) | Fixed `[k × dim]` matrix, typically < 100 MB |
 | **Offline** | Needs cloud API or hosted vector DB | Runs locally with llama-server, sentence-transformers, or fake backend |
 | **Inference** | Calls DB/index on every recall | Pure matrix operation, no locks, predictable latency |
+| **Hook noise** | Stores every short reply, including "ok" and "continue" | Language-aware small-talk filtering + importance gating |
 
 ---
 
@@ -237,6 +238,7 @@ Mimir is currently **v0.2.0**.
 - [x] EventBus + PredictionPolicy + surprise score
 - [x] MCP server + Agent CLI hooks
 - [x] BM25 + lifecycle hybrid recall
+- [x] Multi-language small-talk filtering for automatic hook capture
 - [ ] Async embedding queue
 - [ ] SQLite-backed memory metadata
 - [ ] Project context discovery

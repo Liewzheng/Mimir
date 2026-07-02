@@ -28,6 +28,7 @@ from mimir.adapters.agents import InMemoryAgentAdapter
 from mimir.application.factories import create_embedding_engine
 from mimir.core.config import MimirConfig
 from mimir.domain.model import Message
+from mimir.infrastructure.filtering import FilterConfig, FilterEngine
 from mimir.mcp.session import _detect_workspace_path, _workspace_hash
 
 logger = logging.getLogger(__name__)
@@ -342,8 +343,18 @@ def handle_stop(
             )
         )
 
-    if messages_to_observe:
-        adapter.observe(messages_to_observe)
+    # Filter out small-talk and low-value content before observing. Explicit
+    # MCP store() already filters; hook captures need extra gating because the
+    # agent did not explicitly ask to remember them.
+    filter_engine = FilterEngine(FilterConfig())
+    filtered = [
+        msg
+        for msg in messages_to_observe
+        if filter_engine.should_store(msg.content, source="hook").store
+    ]
+
+    if filtered:
+        adapter.observe(filtered)
 
     # Always consolidate so memories stored via MCP during the turn are learned.
     adapter.consolidate()

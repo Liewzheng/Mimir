@@ -1,0 +1,17 @@
+{
+  "version": "1",
+  "description": "Default small-talk and signal-word rule packs for Mimir memory filtering.",
+  "packs": [
+    {
+      "file": "latin.json",
+      "scripts": ["Latin"],
+      "locales": ["en", "de", "fr", "es", "it", "pt", "nl", "sv", "pl", "tr"]
+    },
+    {
+      "file": "cjk.json",
+      "scripts": ["CJK"],
+      "locales": ["zh", "ja", "ko"]
+    }
+  ],
+  "contributing": "Add a new JSON file named after the script family (e.g. cyrillic.json). Set 'scripts' to the exact script names used by script_utils.SCRIPT_BLOCKS. Keep small_talk exact matches lower-cased."
+}

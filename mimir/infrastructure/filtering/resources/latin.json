@@ -1,0 +1,37 @@
+{
+  "scripts": ["Latin"],
+  "locales": ["en", "de", "fr", "es", "it", "pt", "nl", "sv", "pl", "tr"],
+  "description": "Latin-script small-talk and signal words",
+  "small_talk": {
+    "exact": [
+      "ok", "okay", "ok.", "okay.",
+      "hi", "hello", "hey", "yo", "what's up", "whats up", "sup",
+      "yes", "no", "yep", "nope", "sure", "yeah", "yup", "nah",
+      "thanks", "thank you", "thx", "ty",
+      "bye", "goodbye", "see ya", "later", "take care", "cheers",
+      "continue", "go on", "proceed", "next", "forward",
+      "agreed", "indeed", "exactly", "totally", "definitely", "absolutely",
+      "cool", "nice", "great", "awesome", "wow", "huh", "mhm", "uh-huh",
+      "lol", "haha", "heh", "aha",
+      "right", "alright", "fine"
+    ],
+    "prefix": ["ok ", "okay ", "yes ", "no ", "sure ", "thanks ", "bye ", "hi ", "hello "],
+    "suffix": [" ok", " okay", " yes", " no", " sure", " thanks", " bye"]
+  },
+  "high_signals": [
+    "decided", "decide", "decision",
+    "prefer", "preference",
+    "always", "never", "must", "need to",
+    "important", "critical", "crucial", "essential", "key",
+    "remember", "don't forget", "keep in mind",
+    "goal", "target", "objective",
+    "rule", "policy", "convention",
+    "agreed", "confirmed"
+  ],
+  "low_signals": [
+    "ok", "okay", "sure", "got it", "sounds good", "fine",
+    "thanks", "thank you", "thx", "ty",
+    "hello", "hi", "hey", "bye", "goodbye",
+    "yes", "no", "yep", "nope"
+  ]
+}

@@ -38,6 +38,14 @@ class MimirConfig:
     # Persistence.
     checkpoint_dir: Path | None = None
 
+    # Memory filtering (language-aware small-talk and quality gating).
+    filter_enabled: bool = True
+    filter_min_store_length: int = 1
+    filter_min_hook_length: int = 5
+    filter_min_hook_importance: float = 0.35
+    filter_small_talk_ratio_threshold: float = 0.85
+    filter_user_resource_dir: Path | None = None
+
     def __post_init__(self) -> None:
         if self.num_prototypes <= 0:
             raise ValueError("num_prototypes must be positive")
