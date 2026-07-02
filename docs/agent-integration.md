@@ -63,6 +63,28 @@ Memory(
 
 ---
 
+### Hook 自动捕获过滤
+
+Agent CLI 的 `Stop` hook 会自动把本轮对话写入记忆。为了避免 `"继续"`、`"ok"`、`"hello"` 这类无信息短句污染长期记忆，Mimir 内置了**语言感知的 small-talk 过滤**：
+
+- 对 **hook 自动捕获**启用：短句、small-talk、低信息密度、高重复文本会被丢弃。
+- 对 **MCP 显式 `store()`**宽松：用户/模型主动调用 `store()` 时，默认只过滤空值和乱码，保留用户显式意图。
+- 支持多脚本：Latin、CJK（中日韩）、Cyrillic、Arabic 等，可通过 `mimir/infrastructure/filtering/resources/*.json` 扩展。
+
+过滤规则：
+- 句子级 small-talk 检测（避免"可以。OK。接下来我们讨论架构。"被误杀）。
+- 信息密度 / 重复度 / 标点占比等跨语言启发式。
+- 基于信号词的重要性评分（decided/prefer/important/决定/偏好/重要 等加分）。
+
+配置项（在 `MimirConfig` 中）：
+- `filter_enabled`
+- `filter_min_hook_length`
+- `filter_min_hook_importance`
+- `filter_small_talk_ratio_threshold`
+- `filter_user_resource_dir`（用户可放自定义规则包）
+
+---
+
 ## 与 opencode / kimi code / claude code / codex 集成
 
 这些 agent CLI 通常在每次用户输入后维护一个对话历史。集成方式如下：
