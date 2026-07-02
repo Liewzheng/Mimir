@@ -8,6 +8,7 @@ from mimir.application.factories import create_embedding_engine, create_mimir
 from mimir.core.config import MimirConfig
 from mimir.core.mimir import Mimir
 from mimir.domain.model.engine import EmbeddingEngine
+from mimir.setup import create_setup, list_supported_agents
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -55,6 +56,19 @@ def _build_parser() -> argparse.ArgumentParser:
 
     load_parser = subparsers.add_parser("load", parents=[common], help="Load Mimir state")
     load_parser.add_argument("--path", required=True, help="Checkpoint path")
+
+    setup_parser = subparsers.add_parser("setup", help="Configure Mimir hooks for an agent CLI (kimi-code, claude-code, codex)")
+    setup_parser.add_argument(
+        "agent",
+        choices=list_supported_agents(),
+        help="Agent CLI to configure: kimi-code, claude-code, or codex",
+    )
+    setup_parser.add_argument(
+        "--base-dir",
+        type=Path,
+        default=None,
+        help="Override the agent's config directory",
+    )
 
     return parser
 
@@ -116,6 +130,11 @@ def main(argv: list[str] | None = None) -> int:
             mimir = _create_mimir(args)
             mimir.load(Path(args.path))
             print(f"Loaded from {args.path}; step={mimir.step}")
+
+        elif args.command == "setup":
+            setup = create_setup(args.agent, base_dir=args.base_dir)
+            path = setup.install()
+            print(f"Configured Mimir hooks for {args.agent}: {path}")
 
     except Exception as exc:  # noqa: BLE001
         print(f"Error: {exc}", file=sys.stderr)

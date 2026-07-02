@@ -12,13 +12,16 @@ import subprocess
 import tempfile
 from collections import deque
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from mimir.adapters.agents import InMemoryAgentAdapter
 from mimir.application.factories import create_embedding_engine
 from mimir.core.config import MimirConfig
 from mimir.domain.model import Message
+from mimir.infrastructure.context_discovery import ContextDiscovery
 from mimir.infrastructure.filtering import FilterConfig, FilterEngine
+from mimir.infrastructure.quality_gate import QualityGate, QualityResult
+from mimir.infrastructure.redaction import Redactor
 
 logger = logging.getLogger(__name__)
 
@@ -186,6 +189,7 @@ class SessionManager:
             num_prototypes=num_prototypes,
             top_k=top_k,
         )
+        self.config = config
         self.adapter = InMemoryAgentAdapter(
             config=config,
             engine=engine,
@@ -202,10 +206,20 @@ class SessionManager:
                 user_resource_dir=config.filter_user_resource_dir,
             )
         )
+        self.redactor = Redactor(
+            enabled=config.redaction_enabled,
+            patterns=config.redaction_patterns,
+        )
+        self.quality_gate = QualityGate(
+            duplicate_threshold=config.quality_gate_duplicate_threshold,
+            contradiction_threshold=config.quality_gate_contradiction_threshold,
+        )
+        self.context_discovery = ContextDiscovery()
 
         self._load_errors: deque[str] = deque(maxlen=_MAX_LOAD_ERRORS)
 
         self._load()
+        self._load_project_context()
 
     def _record_load_error(self, message: str) -> None:
         """Append a load error; old entries are dropped once the buffer is full."""
@@ -235,6 +249,110 @@ class SessionManager:
             except (json.JSONDecodeError, ValueError, TypeError):
                 self._record_load_error(f"Failed to load memories from {self.memories_path}")
                 logger.exception("Failed to load memories; starting fresh")
+
+    def _load_project_context(self) -> None:
+        """Ingest agent instruction files from the workspace as high-importance memories.
+
+        Files such as ``AGENTS.md``, ``CLAUDE.md``, and ``.cursorrules`` are
+        loaded once per session. Duplicate content is ignored because the adapter
+        deduplicates memories by content hash.
+        """
+        if not self.config.project_context_enabled:
+            return
+
+        contexts = self.context_discovery.discover(self.workspace_path)
+        if not contexts:
+            return
+
+        existing_texts = {m["text"] for m in self.adapter.memories_state()}
+        texts: list[str] = []
+        for context in contexts:
+            safe_text = self._prepare_text(
+                self.context_discovery.format_memory(context), source="mcp"
+            )
+            if safe_text is not None and safe_text not in existing_texts:
+                texts.append(safe_text)
+
+        if not texts:
+            return
+
+        try:
+            self._observe_and_learn(
+                texts, importance=self.config.project_context_importance
+            )
+            logger.info(
+                "Loaded %d project context file(s) from %s",
+                len(texts),
+                self.workspace_path,
+            )
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to load project context")
+
+    def _prepare_text(self, text: str, source: Literal["mcp", "hook"]) -> str | None:
+        """Return a filtered and redacted version of *text*, or ``None`` if it should be dropped."""
+        result = self.filter_engine.should_store(text, source=source)
+        if not result.store:
+            return None
+        return self.redactor.redact(text)
+
+    def _duplicate_check(self, safe_text: str) -> QualityResult | None:
+        """Return a duplicate result if *safe_text* is too close to an existing memory.
+
+        Returns ``None`` when the gate is disabled, there are no existing memories,
+        or the embedding backend fails. The latter is logged but should not block
+        storage, since the duplicate check is a quality improvement, not a hard
+        invariant.
+        """
+        if not self.config.quality_gate_enabled:
+            return None
+
+        existing = self.adapter.memories_state()
+        if not existing:
+            return None
+
+        try:
+            candidate_embedding = self.adapter.encode([safe_text])[0]
+        except Exception:  # noqa: BLE001
+            logger.exception("Failed to encode candidate for duplicate check")
+            return None
+
+        existing_texts: list[str] = []
+        existing_embeddings: list[Any] = []
+        for item in existing:
+            embedding = item.get("embedding")
+            if embedding is None:
+                continue
+            existing_texts.append(item.get("text", ""))
+            existing_embeddings.append(embedding)
+        if not existing_embeddings:
+            return None
+        return self.quality_gate.check_duplicate(
+            safe_text,
+            candidate_embedding,
+            existing_texts,
+            existing_embeddings,
+        )
+
+    def _observe_and_learn(
+        self, safe_texts: list[str], importance: float = 1.0
+    ) -> dict[str, Any]:
+        """Observe and learn from a batch of already-filtered, redacted texts."""
+        if not safe_texts:
+            return {"learned": False, "memory_count": self.adapter.memory_count}
+        self.adapter.observe(
+            [Message(role="user", content=text) for text in safe_texts]
+        )
+        return self.adapter.learn(safe_texts, importance=importance)
+
+    def _contradiction_hints(self) -> list[dict[str, Any]]:
+        """Return a list of contradiction hints for the current working memory."""
+        if not self.config.quality_gate_enabled:
+            return []
+        all_texts = [m["text"] for m in self.adapter.memories_state()]
+        return [
+            {"index_a": i, "index_b": j, "hint": hint}
+            for i, j, hint in self.quality_gate.find_contradictions(all_texts)
+        ]
 
     def _migrate_legacy_session_checkpoint(self) -> None:
         """Move pre-v0.2 session checkpoints to the new location.
@@ -296,26 +414,64 @@ class SessionManager:
         Non-empty strings only; empty text is a no-op. After learning, the
         session checkpoint and memories sidecar are persisted so that agent CLI
         hooks can recall the new memory immediately.
+
+        The response ``text`` field is the redacted form, so callers never
+        receive secrets back.
+
+        Returns:
+            A dictionary with at least these keys:
+
+            - ``stored`` (bool): whether the text was learned.
+            - ``text`` (str): the redacted text that was (or would have been)
+              stored.
+            - ``memory_count`` (int): current number of memories after the call.
+            - ``reason`` (str, optional): reason for rejection (filter/duplicate).
+            - ``similar_memory`` (str, optional): the closest existing memory when
+              a duplicate was blocked.
+            - ``capacity_usage`` (float, optional): current prototype usage when
+              storage succeeded.
+            - ``contradictions`` (list, optional): contradiction hints produced
+              after storage.
         """
         if not text or not isinstance(text, str):
             return {"stored": False, "text": text, "memory_count": self.adapter.memory_count}
-        result = self.filter_engine.should_store(text, source="mcp")
-        if not result.store:
+
+        safe_text = self._prepare_text(text, source="mcp")
+        if safe_text is None:
+            filter_result = self.filter_engine.should_store(text, source="mcp")
             return {
                 "stored": False,
-                "text": text,
+                "text": self.redactor.redact(text),
                 "memory_count": self.adapter.memory_count,
-                "reason": result.reason,
+                "reason": filter_result.reason,
             }
-        self.adapter.observe([Message(role="user", content=text)])
-        report = self.adapter.learn([text], importance=importance)
+
+        dup = self._duplicate_check(safe_text)
+        if dup is not None and not dup.ok:
+            similar_memory = dup.similar_memory or ""
+            if self.redactor.enabled:
+                similar_memory = self.redactor.redact(similar_memory)
+            return {
+                "stored": False,
+                "text": safe_text,
+                "memory_count": self.adapter.memory_count,
+                "reason": dup.reason,
+                "similar_memory": similar_memory,
+            }
+
+        report = self._observe_and_learn([safe_text], importance=importance)
+        contradiction_hints = self._contradiction_hints()
+
         self._save()
-        return {
+        response: dict[str, Any] = {
             "stored": True,
-            "text": text,
+            "text": safe_text,
             "memory_count": self.adapter.memory_count,
             "capacity_usage": report.get("capacity_usage", 0.0),
         }
+        if contradiction_hints:
+            response["contradictions"] = contradiction_hints
+        return response
 
     def recall(
         self,

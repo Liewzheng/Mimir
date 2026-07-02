@@ -70,3 +70,12 @@ def test_cli_error_return_code(fake_backend_args: list[str]) -> None:
     """Unhandled errors return exit code 1."""
     with mock.patch("mimir.cli._create_mimir", side_effect=RuntimeError("boom")):
         assert main(["encode", *fake_backend_args, "text"]) == 1
+
+
+def test_cli_setup(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
+    """setup command installs the requested agent hook configuration."""
+    argv = ["setup", "codex", "--base-dir", str(tmp_path)]
+    assert main(argv) == 0
+    captured = capsys.readouterr()
+    assert "Configured Mimir hooks for codex" in captured.out
+    assert (tmp_path / "config.toml").exists()

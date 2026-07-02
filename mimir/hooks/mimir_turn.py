@@ -29,6 +29,8 @@ from mimir.application.factories import create_embedding_engine
 from mimir.core.config import MimirConfig
 from mimir.domain.model import Message
 from mimir.infrastructure.filtering import FilterConfig, FilterEngine
+from mimir.infrastructure.quality_gate import QualityGate
+from mimir.infrastructure.redaction import Redactor
 from mimir.mcp.session import _detect_workspace_path, _workspace_hash
 
 logger = logging.getLogger(__name__)
@@ -347,11 +349,39 @@ def handle_stop(
     # MCP store() already filters; hook captures need extra gating because the
     # agent did not explicitly ask to remember them.
     filter_engine = FilterEngine(FilterConfig())
+    redactor = Redactor()
+    quality_gate = QualityGate()
+    redacted = [
+        Message(role=msg.role, content=redactor.redact(msg.content))
+        for msg in messages_to_observe
+    ]
     filtered = [
         msg
-        for msg in messages_to_observe
+        for msg in redacted
         if filter_engine.should_store(msg.content, source="hook").store
     ]
+
+    # Avoid learning exact duplicates of memories already stored via MCP or a
+    # previous hook run. Any failure in the duplicate check is logged and the
+    # check is skipped so that observed messages are not lost.
+    if filtered and adapter.memory_count > 0:
+        try:
+            existing = adapter.memories_state()
+            existing_texts = [m["text"] for m in existing if m.get("embedding") is not None]
+            existing_embeddings = [m["embedding"] for m in existing if m.get("embedding") is not None]
+            embeddings = adapter.encode([msg.content for msg in filtered])
+            deduplicated: list[Message] = []
+            for msg, emb in zip(filtered, embeddings, strict=True):
+                dup = quality_gate.check_duplicate(
+                    msg.content, emb, existing_texts, existing_embeddings
+                )
+                if dup.ok:
+                    deduplicated.append(msg)
+                else:
+                    logger.debug("Hook skipped duplicate memory")
+            filtered = deduplicated
+        except Exception:  # noqa: BLE001
+            logger.exception("Duplicate check failed; observing all filtered messages")
 
     if filtered:
         adapter.observe(filtered)
