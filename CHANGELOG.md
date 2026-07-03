@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Skill context injection with top-N selection and markdown sanitization.
   - `mimir/hooks/skill_observer.py` for `PostToolUse` events.
   - Tests covering extraction, tracking, persistence, store, and injection.
+- Skill validation and revision loop (Phase 2):
+  - Post-hoc validation of safe read-only commands against active skill templates.
+  - Confidence update rule based on usage and failure signals.
+  - Automatic deprecation after repeated failures or sustained low confidence.
+  - Simple revision strategy that re-extracts a skill template from recent
+    cluster data and deprecates the old version.
+  - `mimir/skills/validator.py` and `mimir/skills/revisor.py`.
 
 ### Changed
 

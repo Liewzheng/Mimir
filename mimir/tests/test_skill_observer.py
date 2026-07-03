@@ -10,7 +10,7 @@ from typing import Any
 
 from mimir.hooks.skill_observer import handle_post_tool_use, main
 from mimir.mcp.session import _workspace_hash
-from mimir.skills.store import SkillStore
+from mimir.skills.store import Skill, SkillStore
 from mimir.skills.tracker import SkillTracker
 
 
@@ -105,3 +105,77 @@ class TestSkillObserver:
         assert code == 0
         captured = capsys.readouterr()
         assert "Mimir Skill Observer" in captured.out
+
+
+class TestSkillObserverValidation:
+    def _make_payload(
+        self,
+        command: str,
+        tool_name: str = "Shell",
+        tool_result: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload = {
+            "hook_event_name": "PostToolUse",
+            "tool_name": tool_name,
+            "tool_input": {"command": command},
+        }
+        if tool_result is not None:
+            payload["tool_result"] = tool_result
+        return payload
+
+    def test_validation_updates_usage_on_success(self, tmp_path: Path) -> None:
+        tracker = SkillTracker()
+        # Pre-populate an active skill.
+        store = SkillStore(_workspace_dir(tmp_path, tmp_path) / "skills.jsonl")
+        store.add(
+            Skill(
+                id="s1",
+                type="alias",
+                name="git status",
+                trigger_pattern="git status -sb",
+                expansion="git status -sb",
+                confidence=0.9,
+            )
+        )
+
+        result = handle_post_tool_use(
+            self._make_payload("git status -sb", tool_result={"exit_code": 0}),
+            tmp_path,
+            tmp_path,
+            tracker=tracker,
+        )
+        assert result["status"] == "ok"
+
+        updated = store.get_by_id("s1")
+        assert updated is not None
+        assert updated.usage_count == 1
+
+    def test_validation_deprecates_skill_after_failures(self, tmp_path: Path) -> None:
+        tracker = SkillTracker()
+        store = SkillStore(_workspace_dir(tmp_path, tmp_path) / "skills.jsonl")
+        store.add(
+            Skill(
+                id="s1",
+                type="alias",
+                name="git status",
+                trigger_pattern="git status -sb",
+                expansion="git status -sb",
+                confidence=0.9,
+            )
+        )
+
+        for _ in range(5):
+            result = handle_post_tool_use(
+                self._make_payload(
+                    "git status -sb",
+                    tool_result={"exit_code": 1, "error": "not a repo"},
+                ),
+                tmp_path,
+                tmp_path,
+                tracker=tracker,
+            )
+            assert result["status"] == "ok"
+
+        updated = store.get_by_id("s1")
+        assert updated is not None
+        assert updated.deprecated

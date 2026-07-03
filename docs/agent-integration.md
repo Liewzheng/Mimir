@@ -160,3 +160,45 @@ adapter.restore("my-agent-session.pt")  # 恢复后工作记忆会被清空
 ---
 
 *创建于 2026-06-27 | 对应 P1 agent 集成*
+
+
+## Skill Validation / Revision (P2)
+
+Extracted skills are not frozen. After a skill is added to the store, the
+observer hook continues to validate it against future tool calls and revises
+or deprecates it when the observed pattern drifts.
+
+### Validation
+
+Validation is **post-hoc**: commands are never executed twice. When a `PostToolUse`
+event carries a `tool_result`, the observer checks whether any active skill
+template matches the command that was just run:
+
+- **Success**: confidence moves toward 1.0 and usage count increases.
+- **Failure**: confidence moves toward 0.0 and failure count increases.
+
+Only a whitelist of read-only / safe verbs is auto-validated (`cat`, `ls`,
+`grep`, `git status`, etc.). Destructive commands are observed for pattern
+tracking but skipped by the validator to avoid amplifying risky shortcuts.
+
+### Deprecation
+
+A skill is marked deprecated when either:
+
+- `failure_count >= max_failures` (default 5), or
+- `usage_count >= max_failures` and `confidence < min_confidence` (default 0.5).
+
+Deprecated skills are no longer injected into context but remain in the store
+for history.
+
+### Revision
+
+When a safe command fails to match an active skill with the same cluster key,
+the observer looks at the current tracker cluster. If the cluster has a fresh
+skeleton that differs meaningfully from the old skill template, a revised skill
+is created with `version += 1`, the old skill is deprecated, and the new version
+is added to the store.
+
+This is intentionally simple in Phase 2: the revision is just a re-extraction
+from recent data. More sophisticated over/under-generalization diagnosis is
+planned for Phase 3.

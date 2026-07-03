@@ -19,8 +19,10 @@ from mimir.infrastructure.redaction import Redactor
 from mimir.mcp.session import _detect_workspace_path, _workspace_hash
 from mimir.skills.extractor import Skeleton
 from mimir.skills.injector import InjectorConfig, SkillInjector
+from mimir.skills.revisor import SkillRevisor
 from mimir.skills.store import Skill, SkillStore
 from mimir.skills.tracker import CommandEvent, SkillTracker
+from mimir.skills.validator import SkillValidator, _extract_result, _match_template
 
 logger = logging.getLogger(__name__)
 
@@ -101,11 +103,13 @@ def handle_post_tool_use(
     base_dir: Path,
     tracker: SkillTracker | None = None,
 ) -> dict[str, Any]:
-    """Record a tool call and extract skills if any cluster is ready."""
+    """Record a tool call, extract skills, and validate against active skills."""
     ws_dir = _workspace_dir(base_dir, workspace_path)
     tracker = tracker or _load_tracker(ws_dir)
     store = SkillStore(ws_dir / "skills.jsonl")
     injector = SkillInjector(InjectorConfig(max_active=10, min_confidence=0.85))
+    validator = SkillValidator(store)
+    revisor = SkillRevisor()
 
     redactor = Redactor()
     tool_name = payload.get("tool_name", "")
@@ -125,6 +129,15 @@ def handle_post_tool_use(
             extracted.append(skill)
             tracker.reset(cluster.key)
 
+    # Post-hoc validation: compare the just-executed command with active skills.
+    success = _extract_result(payload)
+    if success is not None:
+        validator.validate(tool_name, command, success)
+        # If the command did not match an active skill, try to revise the
+        # closest existing skill using the current cluster data.
+        if not _command_matches_active_skill(store, command):
+            _attempt_revision(store, tracker, revisor, command, tool_name)
+
     _save_tracker(tracker, ws_dir)
 
     injection = injector.inject(store.load())
@@ -136,6 +149,55 @@ def handle_post_tool_use(
         "extracted": [s.to_dict() for s in extracted],
         "injection": injection["formatted"],
     }
+
+
+def _command_matches_active_skill(store: SkillStore, command: str) -> bool:
+    """Return True if any active skill template matches the command."""
+    for skill in store.load():
+        template = skill.template or skill.expansion
+        if template and _match_template(template, command):
+            return True
+    return False
+
+
+def _attempt_revision(
+    store: SkillStore,
+    tracker: SkillTracker,
+    revisor: SkillRevisor,
+    command: str,
+    tool_name: str = "Shell",
+) -> None:
+    """Revise active skills whose cluster skeleton has drifted."""
+    from mimir.skills.validator import SafeCommandClassifier
+
+    classifier = SafeCommandClassifier()
+    if not classifier.is_safe(tool_name, command):
+        return
+
+    event = CommandEvent(tool_name=tool_name, command=command)
+    cluster_key = tracker._cluster_key(event)
+    cluster = tracker._clusters.get(cluster_key)
+    if cluster is None or cluster.skeleton is None:
+        return
+
+    for skill in list(store.load()):
+        if skill.name != cluster_key.replace("Shell:", "").replace("Tool:", ""):
+            continue
+        revised = revisor.revise(skill, cluster)
+        if revised is not None:
+            store.deprecate(skill.id)
+            store.add(revised)
+
+
+def _cluster_key_for_command(command: str) -> str:
+    """Compute the tracker cluster key for a shell command."""
+    tokens = [t for t in command.split() if t]
+    if not tokens:
+        return "Shell:<empty>"
+    first = tokens[0]
+    if len(tokens) >= 2 and not tokens[1].startswith("-"):
+        return f"Shell:{first} {tokens[1]}"
+    return f"Shell:{first}"
 
 
 def _read_stdin() -> str:
