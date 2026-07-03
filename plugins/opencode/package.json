@@ -1,0 +1,26 @@
+{
+  "name": "mimir-opencode-plugin",
+  "version": "0.1.0",
+  "description": "Mimir memory integration for OpenCode",
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": {
+    ".": {
+      "import": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "tsc"
+  },
+  "peerDependencies": {
+    "@opencode-ai/plugin": ">=1.0.0"
+  },
+  "devDependencies": {
+    "@opencode-ai/plugin": "*",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "opencode": ">=1.15.0"
+  }
+}

@@ -1,5 +1,6 @@
 """Tests for `mimir setup` command."""
 
+import json
 from pathlib import Path
 
 import pytest
@@ -8,6 +9,7 @@ from mimir.setup import (
     ClaudeCodeSetup,
     CodexSetup,
     KimiCodeSetup,
+    OpenCodeSetup,
     create_setup,
     list_supported_agents,
 )
@@ -19,6 +21,7 @@ class TestSetupRegistry:
         assert "kimi-code" in agents
         assert "claude-code" in agents
         assert "codex" in agents
+        assert "opencode" in agents
 
     def test_create_setup_unknown(self) -> None:
         with pytest.raises(ValueError):
@@ -79,3 +82,32 @@ class TestCodexSetup:
         first_size = setup.config_path.stat().st_size
         setup.install()
         assert setup.config_path.stat().st_size == first_size
+
+
+class TestOpenCodeSetup:
+    def test_install_creates_config(self, tmp_path: Path) -> None:
+        plugin_path = tmp_path / "mimir-opencode-plugin"
+        plugin_path.mkdir()
+        setup = OpenCodeSetup(config_dir=tmp_path, plugin_path=plugin_path)
+        path = setup.install()
+        assert path.exists()
+        data = json.loads(path.read_text())
+        assert "plugins" in data
+        assert any(setup._is_mimir_plugin(entry) for entry in data["plugins"])
+
+    def test_install_is_idempotent(self, tmp_path: Path) -> None:
+        plugin_path = tmp_path / "mimir-opencode-plugin"
+        plugin_path.mkdir()
+        setup = OpenCodeSetup(config_dir=tmp_path, plugin_path=plugin_path)
+        setup.install()
+        first_size = setup.config_path.stat().st_size
+        setup.install()
+        assert setup.config_path.stat().st_size == first_size
+
+    def test_is_installed(self, tmp_path: Path) -> None:
+        plugin_path = tmp_path / "mimir-opencode-plugin"
+        plugin_path.mkdir()
+        setup = OpenCodeSetup(config_dir=tmp_path, plugin_path=plugin_path)
+        assert not setup.is_installed()
+        setup.install()
+        assert setup.is_installed()

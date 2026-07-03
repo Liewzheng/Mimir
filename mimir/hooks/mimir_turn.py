@@ -199,20 +199,98 @@ def _summarize_for_memory(text: str, role: str, max_chars: int = 150) -> str:
     return text[:max_chars].rsplit(" ", 1)[0] + "…"
 
 
+def _extract_text_from_codex_content_item(item: Any) -> str:
+    """Return plain text from a Codex ResponseItem content item.
+
+    Codex content items use ``input_text`` for user content and ``output_text``
+    for assistant content.  Images and other non-text parts are ignored.
+    """
+    if not isinstance(item, dict):
+        return ""
+    item_type = item.get("type")
+    if item_type in {"input_text", "output_text"}:
+        text = item.get("text")
+        return text if isinstance(text, str) else ""
+    return ""
+
+
+def _extract_messages_from_codex_transcript(transcript_path: str | Path) -> list[Message]:
+    """Extract the last user/assistant exchange from a Codex JSONL transcript.
+
+    Codex transcripts are JSONL files where each line is a ``ResponseItem``.
+    User and assistant messages have the shape::
+
+        {
+          "type": "message",
+          "role": "user" | "assistant",
+          "content": [
+            {"type": "input_text" | "output_text", "text": "..."}
+          ]
+        }
+
+    This function reads the transcript and returns the last one or two
+    user/assistant messages, which is enough for the hook to observe the
+    current turn.
+    """
+    path = Path(transcript_path)
+    if not path.exists():
+        return []
+
+    messages: list[Message] = []
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(item, dict):
+                    continue
+                if item.get("type") == "response_item" and isinstance(item.get("payload"), dict):
+                    item = item["payload"]
+                if item.get("type") != "message":
+                    continue
+                role = item.get("role")
+                if role not in {"user", "assistant"}:
+                    continue
+                content_items = item.get("content") or []
+                parts = [
+                    _extract_text_from_codex_content_item(part)
+                    for part in content_items
+                    if isinstance(part, dict)
+                ]
+                content = "\n".join(part for part in parts if part)
+                if content:
+                    messages.append(Message(role=role, content=content))
+    except OSError:
+        logger.exception("Failed to read Codex transcript: %s", path)
+        return []
+
+    return messages[-2:]
+
+
 def _extract_last_exchange(payload: dict[str, Any]) -> list[Message]:
     """Extract the last user/assistant exchange from a Stop payload.
 
-    Supported agent CLIs include:
-      - Kimi Code: ``payload["messages"]`` array (added in the
-        ``feat/mimir-stop-messages`` branch).
-      - Claude Code / Codex: ``payload["messages"]`` array.
+    Different agent CLIs expose different shapes:
+      - Kimi Code / Claude Code: ``payload["messages"]`` array.
+      - Codex: ``payload["messages"]`` array when available; otherwise this
+        function falls back to parsing ``payload["transcript_path"]`` JSONL.
     """
     messages = payload.get("messages") or []
-    if not messages:
+    if messages:
+        source = messages
+    else:
+        transcript_path = payload.get("transcript_path")
+        if transcript_path:
+            return _extract_messages_from_codex_transcript(transcript_path)
         return []
 
     result = []
-    for msg in messages[-2:]:
+    for msg in source[-2:]:
         if not isinstance(msg, dict):
             continue
         role = msg.get("role")
@@ -233,6 +311,7 @@ def handle_user_prompt_submit(
     top_k: int,
     recall_top_k: int,
     recall_score_threshold: float,
+    format_json: bool = False,
 ) -> int:
     """Recall relevant memories before the assistant replies."""
     adapter = _load_adapter(
@@ -245,10 +324,14 @@ def handle_user_prompt_submit(
         top_k,
     )
     if adapter is None:
+        if format_json:
+            print(json.dumps({"recall": None, "trigger": None}, ensure_ascii=False))
         return 0
 
     query = _extract_user_text(payload)
     if not query:
+        if format_json:
+            print(json.dumps({"recall": None, "trigger": None}, ensure_ascii=False))
         return 0
 
     output = _format_recall_results(
@@ -258,9 +341,17 @@ def handle_user_prompt_submit(
         score_threshold=recall_score_threshold,
     )
     trigger = _format_organize_trigger(adapter)
-    combined = output + trigger if output else trigger
-    if combined:
-        print(combined)
+    if format_json:
+        print(
+            json.dumps(
+                {"recall": output or None, "trigger": trigger or None},
+                ensure_ascii=False,
+            )
+        )
+    else:
+        combined = output + trigger if output else trigger
+        if combined:
+            print(combined)
     return 0
 
 
@@ -283,6 +374,7 @@ def handle_stop(
     model: str,
     num_prototypes: int,
     top_k: int,
+    format_json: bool = False,
 ) -> int:
     """Persist the turn: observe any available messages, then consolidate.
 
@@ -328,7 +420,8 @@ def handle_stop(
             adapter.clear_memories()
 
     # Collect the last exchange. Some CLIs provide a full messages array;
-    # Claude Code / Codex also provide last_assistant_message as a fallback.
+    # Claude Code / Codex provide last_assistant_message as a fallback, and Codex
+    # additionally exposes a transcript_path JSONL that we parse when messages is absent.
     exchange = _extract_last_exchange(payload)
     messages_to_observe: list[Message] = [
         Message(role=m.role, content=_summarize_for_memory(m.content, m.role)) for m in exchange
@@ -394,6 +487,13 @@ def handle_stop(
         json.dumps(adapter.memories_state(), indent=2),
         encoding="utf-8",
     )
+    if format_json:
+        print(
+            json.dumps(
+                {"status": "ok", "observed_count": len(filtered)},
+                ensure_ascii=False,
+            )
+        )
     return 0
 
 
@@ -405,6 +505,7 @@ def handle_session_start(
     model: str,
     num_prototypes: int,
     top_k: int,
+    format_json: bool = False,
 ) -> int:
     """Print a short workspace summary when a session starts."""
     adapter = _load_adapter(
@@ -417,10 +518,33 @@ def handle_session_start(
         top_k,
     )
     if adapter is None:
-        print("[Mimir] 当前工作空间尚无记忆。")
+        if format_json:
+            print(
+                json.dumps(
+                    {"status": "ok", "memory_count": 0, "capacity_usage": 0.0},
+                    ensure_ascii=False,
+                )
+            )
+        else:
+            print("[Mimir] 当前工作空间尚无记忆。")
         return 0
 
-    print(f"[Mimir] 已加载 {adapter.memory_count} 条记忆，原型使用 {adapter.capacity_usage:.1%}。")
+    if format_json:
+        print(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "memory_count": adapter.memory_count,
+                    "capacity_usage": adapter.capacity_usage,
+                },
+                ensure_ascii=False,
+            )
+        )
+    else:
+        print(
+            f"[Mimir] 已加载 {adapter.memory_count} 条记忆，"
+            f"原型使用 {adapter.capacity_usage:.1%}。"
+        )
     return 0
 
 
@@ -492,6 +616,12 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Override the detected workspace path",
     )
+    parser.add_argument(
+        "--format",
+        choices=["text", "json"],
+        default="text",
+        help="Output format for hook results (default: %(default)s)",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
@@ -502,17 +632,27 @@ def main(argv: list[str] | None = None) -> int:
     payload_text = sys.stdin.read()
     if not payload_text:
         logger.warning("No event payload on stdin")
+        if args.format == "json":
+            print(json.dumps({"status": "error", "reason": "empty stdin"}, ensure_ascii=False))
         return 0
 
     try:
         payload = json.loads(payload_text)
     except json.JSONDecodeError as exc:
         logger.error("Invalid JSON on stdin: %s", exc)
+        if args.format == "json":
+            print(
+                json.dumps(
+                    {"status": "error", "reason": f"invalid JSON: {exc}"},
+                    ensure_ascii=False,
+                )
+            )
         return 0
 
     workspace_path = _detect_workspace_path(args.workspace_path)
     base_dir = args.base_dir or _DEFAULT_BASE_DIR
     event = payload.get("hook_event_name")
+    format_json = args.format == "json"
 
     try:
         if event == "UserPromptSubmit":
@@ -527,6 +667,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.top_k,
                 args.recall_top_k,
                 args.recall_score_threshold,
+                format_json=format_json,
             )
         if event == "Stop":
             return handle_stop(
@@ -538,6 +679,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.model,
                 args.num_prototypes,
                 args.top_k,
+                format_json=format_json,
             )
         if event == "SessionStart":
             return handle_session_start(
@@ -548,11 +690,26 @@ def main(argv: list[str] | None = None) -> int:
                 args.model,
                 args.num_prototypes,
                 args.top_k,
+                format_json=format_json,
             )
-    except Exception:  # noqa: BLE001
+    except Exception as exc:  # noqa: BLE001
         logger.exception("Hook failed for event %s", event)
+        if format_json:
+            print(
+                json.dumps(
+                    {"status": "error", "reason": str(exc)},
+                    ensure_ascii=False,
+                )
+            )
         return 0
 
+    if format_json:
+        print(
+            json.dumps(
+                {"status": "ignored", "event": event},
+                ensure_ascii=False,
+            )
+        )
     logger.debug("Ignoring unsupported event: %s", event)
     return 0
 
