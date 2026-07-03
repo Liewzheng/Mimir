@@ -246,6 +246,49 @@ class TestSyncSessionManagerStillWorks:
         assert result["stored"] is True
         assert session.adapter.memory_count == 1
 
+    def test_sync_store_rejects_invalid_importance(self, tmp_path: Path) -> None:
+        session = SessionManager(
+            backend="fake",
+            workspace_path=tmp_path / "workspace",
+            base_dir=tmp_path / ".mimir",
+        )
+        assert session.store("I like Python", importance=-1.0)["reason"] == "invalid_importance"
+        assert session.store("I like Python", importance=float("nan"))["reason"] == "invalid_importance"
+        assert session.store("I like Python", importance=float("inf"))["reason"] == "invalid_importance"
+
+    def test_concurrent_sync_store_and_recall(self, tmp_path: Path) -> None:
+        import threading
+
+        session = SessionManager(
+            backend="fake",
+            workspace_path=tmp_path / "workspace",
+            base_dir=tmp_path / ".mimir",
+        )
+        errors: list[Exception] = []
+
+        def store_loop() -> None:
+            for i in range(20):
+                try:
+                    session.store(f"memory {i}")
+                except Exception as exc:  # pragma: no cover - defensive
+                    errors.append(exc)
+
+        def recall_loop() -> None:
+            for _ in range(20):
+                try:
+                    session.recall("memory")
+                except Exception as exc:  # pragma: no cover - defensive
+                    errors.append(exc)
+
+        t1 = threading.Thread(target=store_loop)
+        t2 = threading.Thread(target=recall_loop)
+        t1.start()
+        t2.start()
+        t1.join(timeout=10.0)
+        t2.join(timeout=10.0)
+        assert not errors, f"Concurrent errors: {errors}"
+        session.close()
+
 
 class TestConfigValidation:
     def test_rejects_negative_async_queue_size(self, tmp_path: Path) -> None:

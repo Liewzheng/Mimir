@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import pickle
 import queue
@@ -594,7 +595,7 @@ class SessionManager:
                 "reason": filter_result.reason,
             }
 
-        if not isinstance(importance, (int, float)) or importance < 0:
+        if not isinstance(importance, (int, float)) or importance < 0 or math.isnan(importance) or math.isinf(importance):
             return {
                 "stored": False,
                 "text": safe_text,
