@@ -207,13 +207,13 @@ compressed set of typical examples that continuously updates itself.
 
 | Tool | Purpose |
 |---|---|
-| `store(text, importance=1.0)` | Store and learn from text. Secrets are redacted before storage; the response `text` field is the redacted form. |
+| `store(text, importance=1.0)` | Store and learn from text. Secrets are redacted before storage; the response `text` field is the redacted form. With async store enabled, returns `"pending"` and processes in the background. |
 | `recall(query, top_k=5, min_score=0.0)` | Hybrid vector + BM25 recall, reranked by lifecycle metadata |
 | `consolidate()` | Consolidate the working memory buffer |
 | `forget()` | Clear the current session's working memory |
 | `checkpoint(name)` | Save a named checkpoint |
 | `restore(name)` | Restore to a named checkpoint |
-| `status()` | Show session stats |
+| `status()` | Show session stats. When async store is enabled, includes `async_store` with `enabled` and `pending_count`. |
 
 `store()` may also include `reason`, `similar_memory`, or `contradictions` in its
 response when a memory is rejected or appears to contradict an existing memory.
@@ -246,6 +246,32 @@ MimirConfig(
 )
 ```
 
+### Async store
+
+For MCP / agent integrations where the embedding backend is slow, you can defer
+`store()` to a background worker so the tool returns immediately:
+
+```python
+MimirConfig(
+    async_store_enabled=True,
+    async_store_queue_size=1000,
+    async_store_flush_timeout=5.0,
+)
+```
+
+When async storage is enabled, `store()` returns one of:
+
+- `{"stored": "pending", "text": ..., "memory_count": ..., "pending_count": ...}`
+  when the item is enqueued successfully.
+- `{"stored": False, "text": ..., "memory_count": ..., "reason": "queue_full"}`
+  when the queue is at capacity.
+
+The background worker performs duplicate checks, learning, and persistence. On
+MCP server shutdown the queue is flushed so pending memories are not lost.
+
+`status()` includes an `async_store` dictionary with `enabled`, `pending_count`,
+and `worker_alive` so you can monitor the queue health.
+
 ### Other useful configuration fields
 
 | Field | Default | Purpose |
@@ -254,6 +280,9 @@ MimirConfig(
 | `redaction_patterns` | `None` | Custom regex list (`None` = defaults, `[]` = disabled) |
 | `project_context_enabled` | `True` | Auto-ingest `AGENTS.md` / `CLAUDE.md` / `.cursorrules` |
 | `project_context_importance` | `1.5` | Importance assigned to project context memories |
+| `async_store_enabled` | `False` | Defer embedding/learning to background worker |
+| `async_store_queue_size` | `1000` | Max pending items for async store |
+| `async_store_flush_timeout` | `5.0` | Seconds to wait for flush on shutdown |
 
 ## Programming Interface
 
@@ -318,7 +347,7 @@ Mimir is currently **v0.2.0**.
 - [x] Project context discovery (`AGENTS.md`, `CLAUDE.md`, `.cursorrules`)
 - [x] `mimir setup <agent>` one-shot configuration
 - [x] Duplicate blocking and contradiction hints
-- [ ] Async embedding queue
+- [x] Async embedding queue
 - [ ] SQLite-backed memory metadata
 - [ ] HITL preview before storing high-impact memories
 

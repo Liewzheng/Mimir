@@ -60,6 +60,11 @@ class MimirConfig:
     project_context_enabled: bool = True
     project_context_importance: float = 1.5
 
+    # Async embedding queue for non-blocking store().
+    async_store_enabled: bool = False
+    async_store_queue_size: int = 1000
+    async_store_flush_timeout: float = 5.0
+
     def __post_init__(self) -> None:
         if self.num_prototypes <= 0:
             raise ValueError("num_prototypes must be positive")
@@ -80,6 +85,10 @@ class MimirConfig:
             raise ValueError("quality_gate_contradiction_threshold must be in [0, 1]")
         if self.project_context_importance < 0:
             raise ValueError("project_context_importance must be non-negative")
+        if self.async_store_queue_size < 0:
+            raise ValueError("async_store_queue_size must be non-negative")
+        if self.async_store_flush_timeout < 0:
+            raise ValueError("async_store_flush_timeout must be non-negative")
         if self.redaction_patterns is not None:
             for pattern in self.redaction_patterns:
                 if not pattern:

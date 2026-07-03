@@ -29,13 +29,18 @@ def store(text: str, importance: float = 1.0, *, ctx: Context[Any, ServerContext
     project conventions, decisions, or any context that should persist across
     turns.
 
+    When the server is configured for async storage, the embedding backend and
+    learning happen on a background thread. In that case the response contains
+    `{"stored": "pending"}` and the fact is queued for later processing.
+
     Args:
         text: The text to remember. Non-empty strings only.
         importance: Learning weight (default 1.0). Higher values emphasize the
             fact during consolidation.
 
     Returns:
-        JSON with `stored`, `text`, `memory_count`, and `capacity_usage`.
+        JSON with `stored` (True, "pending", or False), `text`, `memory_count`,
+        `capacity_usage`, and optionally `pending_count` / `reason`.
     """
     result = _session(ctx).store(text, importance=importance)
     return json.dumps(result, ensure_ascii=False, indent=2)
