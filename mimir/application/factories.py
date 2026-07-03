@@ -33,6 +33,11 @@ def create_mimir(
 ) -> Mimir:
     """Assemble a fully configured Mimir instance.
 
+    If ``engine.output_dim`` is unknown, this factory sends a one-item probe
+    through the engine to discover the embedding dimension. That probe may
+    perform a network request (e.g., for llama-server or Ollama backends), so
+    this function can raise ``RuntimeError`` if the backend is unreachable.
+
     Args:
         config: Mimir configuration.
         engine: Optional pre-built embedding engine. If omitted, one is created
@@ -52,7 +57,13 @@ def create_mimir(
 
     # Ensure the engine knows its output dimension before building the store.
     if engine.output_dim == 0:
-        _ = engine.encode(["__mimir_probe__"])
+        try:
+            _ = engine.encode(["__mimir_probe__"])
+        except (OSError, RuntimeError, ValueError, TypeError, ImportError) as exc:
+            raise RuntimeError(
+                f"Embedding engine probe failed for backend {backend!r}. "
+                "Check that the backend is reachable and configured correctly."
+            ) from exc
 
     return Mimir(
         config=config,
@@ -63,5 +74,10 @@ def create_mimir(
 
 
 def create_prototype_store_policy() -> OjaLearningPolicy:
-    """Return the default learning policy for PrototypeStore."""
+    """Return the default Oja learning policy for PrototypeStore.
+
+    Oja's rule is a Hebbian learning rule that adapts prototype vectors
+    toward input embeddings while normalizing their magnitude, keeping the
+    prototype matrix stable as new memories are observed.
+    """
     return OjaLearningPolicy()

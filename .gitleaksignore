@@ -1,0 +1,7 @@
+# These files contain intentionally fake secrets used for testing redaction
+# or public benchmark dialogue; they do not contain real credentials.
+#
+# Before adding a new entry, confirm the file contains no real credentials.
+# When in doubt, redact or rotate the secret rather than adding it here.
+mimir/tests/test_redaction.py
+eval_data/longmemeval/longmemeval_s_cleaned.json

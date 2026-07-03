@@ -4,6 +4,7 @@ Supported agents:
 - kimi-code
 - claude-code
 - codex
+- opencode
 
 Each setup writes the minimal hook configuration needed to call Mimir's
 ``mimir_turn`` hook on lifecycle events. The command is idempotent: running it
@@ -16,7 +17,7 @@ import json
 import shutil
 import sys
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 
 class AgentSetup(Protocol):
@@ -147,10 +148,85 @@ class CodexSetup:
         return self.config_path
 
 
+def _default_opencode_plugin_path() -> Path:
+    """Return the default path to the bundled OpenCode plugin."""
+    return Path(__file__).resolve().parents[2] / "plugins" / "opencode"
+
+
+class OpenCodeSetup:
+    """Add the Mimir plugin to OpenCode's ``~/.config/opencode/opencode.json``."""
+
+    agent = "opencode"
+
+    def __init__(
+        self,
+        config_dir: Path | None = None,
+        plugin_path: Path | None = None,
+    ) -> None:
+        self.config_dir = Path(config_dir or Path.home() / ".config" / "opencode")
+        self.config_path = self.config_dir / "opencode.json"
+        self.plugin_path = Path(plugin_path or _default_opencode_plugin_path()).resolve()
+
+    def _is_mimir_plugin(self, entry: Any) -> bool:
+        """Return True if ``entry`` already points to the Mimir plugin."""
+        if isinstance(entry, str):
+            return "mimir-opencode-plugin" in entry or str(self.plugin_path) == entry
+        if isinstance(entry, (list, tuple)) and len(entry) > 0:
+            package = entry[0]
+            return "mimir-opencode-plugin" in str(package) or str(self.plugin_path) == package
+        if isinstance(entry, dict):
+            package = entry.get("package", "")
+            return "mimir-opencode-plugin" in str(package) or str(self.plugin_path) == package
+        return False
+
+    def is_installed(self) -> bool:
+        if not self.config_path.exists():
+            return False
+        try:
+            data = json.loads(self.config_path.read_text())
+        except json.JSONDecodeError:
+            return False
+        plugins = data.get("plugin", [])
+        return any(self._is_mimir_plugin(entry) for entry in plugins)
+
+    def install(self) -> Path:
+        self.config_dir.mkdir(parents=True, exist_ok=True)
+        python = shutil.which("python3") or shutil.which("python") or sys.executable
+        plugin_entry: list[Any] = [
+            str(self.plugin_path),
+            {
+                "python": python,
+                "backend": "llama-server",
+                "baseUrl": "http://127.0.0.1:11435",
+                "model": "all-MiniLM-L6-v2",
+            },
+        ]
+        if self.config_path.exists():
+            try:
+                data = json.loads(self.config_path.read_text())
+            except json.JSONDecodeError:
+                data = {}
+        else:
+            data = {}
+
+        # The correct OpenCode config key is the singular ``plugin``; remove any
+        # stale ``plugins`` array we may have written in earlier versions.
+        if isinstance(data.get("plugins"), list):
+            del data["plugins"]
+
+        plugins = data.setdefault("plugin", [])
+        if not any(self._is_mimir_plugin(entry) for entry in plugins):
+            plugins.append(plugin_entry)
+
+        self.config_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        return self.config_path
+
+
 SETUP_REGISTRY: dict[str, type[AgentSetup]] = {
     "kimi-code": KimiCodeSetup,
     "claude-code": ClaudeCodeSetup,
     "codex": CodexSetup,
+    "opencode": OpenCodeSetup,
 }
 
 

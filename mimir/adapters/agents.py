@@ -33,7 +33,9 @@ from mimir.infrastructure.lifecycle import (
 from mimir.infrastructure.lifecycle.metadata import MemoryMetadata
 from mimir.infrastructure.retrieval import (
     BM25Scorer,
+    PostprocessorConfig,
     RankFusion,
+    RecallPostprocessor,
     VectorScorer,
 )
 
@@ -258,14 +260,18 @@ class InMemoryAgentAdapter(AgentMemoryInterface):
         use_bm25: bool = True,
         use_lifecycle: bool = True,
         lifecycle_weight: float = 0.3,
+        dedup_threshold: float = 0.9,
+        ranking_mode: str = "multiplicative",
+        max_candidates_for_clustering: int = 50,
     ) -> list[Memory]:
         """Return the top-k memories most relevant to the query.
 
         By default this performs a hybrid retrieval: vector cosine similarity
         is fused with BM25 keyword matching via Reciprocal Rank Fusion (RRF),
-        and the result is reranked by lifecycle metadata (recency, importance,
-        access count). Pass ``use_bm25=False`` or ``use_lifecycle=False`` to
-        fall back to the previous pure-vector behavior.
+        and the result is post-processed with semantic clustering deduplication
+        and lifecycle-aware reranking (recency, importance, access count). Pass
+        ``use_bm25=False`` or ``use_lifecycle=False`` to fall back to the
+        previous pure-vector behavior.
 
         Args:
             query: The recall query text.
@@ -275,7 +281,14 @@ class InMemoryAgentAdapter(AgentMemoryInterface):
             use_bm25: Whether to include BM25 keyword scores in the fusion.
             use_lifecycle: Whether to apply lifecycle reranking.
             lifecycle_weight: Weight of the lifecycle score in the final blend.
-                0.0 means no lifecycle reranking; 1.0 means lifecycle only.
+                In multiplicative mode the final score is
+                ``retrieval * (1 + lifecycle_weight * norm_lifecycle)``.
+                In additive mode it is the previous linear blend.
+            dedup_threshold: Cosine similarity threshold for semantic clustering
+                deduplication. 1.0 disables clustering.
+            ranking_mode: ``multiplicative`` (default) or ``additive``.
+            max_candidates_for_clustering: Maximum number of top retrieval
+                candidates considered for semantic clustering.
 
         Returns:
             A list of Memory objects sorted by final relevance score.
@@ -320,24 +333,13 @@ class InMemoryAgentAdapter(AgentMemoryInterface):
             lifecycle_scorer = LifecycleScorer()
             lifecycle_scores = lifecycle_scorer.score(self._memories)
 
-        # Build candidates, applying min_score to the fused retrieval score.
-        scored: list[tuple[Memory, float]] = []
+        # Build candidate list, applying min_score to the fused retrieval score.
+        candidates: list[Memory] = []
+        candidate_retrieval: dict[int, float] = {}
         for idx, memory in enumerate(self._memories):
             retrieval_score = fused_scores.get(idx, 0.0)
             if retrieval_score < min_score:
                 continue
-
-            final_score = retrieval_score
-            if use_lifecycle and lifecycle_scores:
-                lifecycle_score = lifecycle_scores.get(idx, 0.0)
-                # Normalize lifecycle scores to [0, 1] using the max observed.
-                max_lifecycle = max(lifecycle_scores.values())
-                normalized_lifecycle = (
-                    lifecycle_score / max_lifecycle if max_lifecycle > 0 else 0.0
-                )
-                final_score = (
-                    1.0 - lifecycle_weight
-                ) * retrieval_score + lifecycle_weight * normalized_lifecycle
 
             meta = memory.metadata.get("lifecycle")
             if isinstance(meta, dict):
@@ -346,22 +348,56 @@ class InMemoryAgentAdapter(AgentMemoryInterface):
             if isinstance(meta, MemoryMetadata):
                 meta.touch()
 
-            scored.append(
-                (
-                    Memory(
-                        text=memory.text,
-                        embedding=memory.embedding,
-                        score=final_score,
-                        created_at=memory.created_at,
-                        source=memory.source,
-                        metadata=memory.metadata,
-                    ),
-                    final_score,
+            # Clone the candidate so the postprocessor can mutate its score without
+            # leaking per-query values into the persisted working memory buffer.
+            candidates.append(
+                Memory(
+                    text=memory.text,
+                    embedding=memory.embedding,
+                    score=memory.score,
+                    created_at=memory.created_at,
+                    source=memory.source,
+                    metadata=memory.metadata,
                 )
             )
+            candidate_retrieval[len(candidates) - 1] = retrieval_score
 
-        scored.sort(key=lambda item: item[1], reverse=True)
-        return [memory for memory, _ in scored[:top_k]]
+        lifecycle_for_candidates: dict[int, float] | None = None
+        if use_lifecycle and lifecycle_scores:
+            lifecycle_for_candidates = {
+                i: lifecycle_scores[global_idx]
+                for i, global_idx in enumerate(
+                    idx
+                    for idx, memory in enumerate(self._memories)
+                    if fused_scores.get(idx, 0.0) >= min_score
+                )
+            }
+
+        postprocessor = RecallPostprocessor(
+            config=PostprocessorConfig(
+                dedup_threshold=dedup_threshold,
+                ranking_mode=ranking_mode,
+                lifecycle_weight=lifecycle_weight,
+                max_candidates_for_clustering=max_candidates_for_clustering,
+            )
+        )
+        ranked = postprocessor.process(
+            candidates, candidate_retrieval, lifecycle_for_candidates
+        )
+
+        # Clone the ranked representatives so callers receive a stable snapshot
+        # and the internal buffer is not mutated by downstream score changes.
+        return [
+            Memory(
+                text=memory.text,
+                embedding=memory.embedding,
+                score=memory.score,
+                created_at=memory.created_at,
+                source=memory.source,
+                metadata=memory.metadata,
+            )
+            for memory in ranked[:top_k]
+        ]
 
     def consolidate(self) -> None:
         """Reinforce all memories currently held in the buffer.

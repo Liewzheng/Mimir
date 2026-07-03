@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-07-03
+
+### Added
+
+- GitHub Actions CI now caches pip dependencies and enforces `timeout-minutes` on
+  all jobs.
+- Gitleaks secret-scanning job added to CI.
+- README now includes a Development section with local setup, check commands,
+  extras explanations, and secret-scanning notes.
+
+### Changed
+
+- CI Node.js version is now defined by a workflow-level `NODE_VERSION`
+  environment variable.
+
+### Fixed
+
+- Replaced `math.exp2` with `2 ** x` in lifecycle scorer to restore Python 3.10
+  compatibility (`math.exp2` was added in Python 3.11).
+
 ## [0.3.0] - 2026-07-03
 
 ### Added
@@ -46,6 +66,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `SessionManager` now reuses the filtering / redaction / learning pipeline for
   both project context ingestion and explicit `store()` calls.
 - Project context importance default is now `1.5` (previously hard-coded `2.0`).
+- Minimum dependency versions raised: `httpx >= 0.27.2` (was `>= 0.25.0`) and
+  `sentence-transformers >= 2.5.0` (was `>= 2.3.0`).
 
 ### Fixed
 
@@ -64,6 +86,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Initial release of Mimir core: plastic memory well with PPN, hybrid retrieval,
   and agent adapter.
 
-[Unreleased]: https://github.com/Liewzheng/Mimir/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/Liewzheng/Mimir/compare/v0.3.1...HEAD
+[0.3.1]: https://github.com/Liewzheng/Mimir/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/Liewzheng/Mimir/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/Liewzheng/Mimir/releases/tag/v0.2.0

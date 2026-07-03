@@ -36,10 +36,15 @@ class PrototypeStore:
         self._init_prototypes()
 
     def _init_prototypes(self) -> None:
-        """Initialize prototypes as small random unit vectors."""
+        """Initialize prototypes as small random unit vectors.
+
+        The created_step column is initialized to -1 so that a prototype created
+        at global step 0 is not mistaken for uninitialized on later updates.
+        """
         self.prototypes.normal_(mean=0.0, std=self.config.prototype_init_scale)
         self.prototypes = functional.normalize(self.prototypes, dim=1)
         self.metadata[:, self._STRENGTH_IDX] = 1.0
+        self.metadata[:, self._CREATED_STEP_IDX] = -1.0
 
     def lookup(self, base: torch.Tensor) -> torch.Tensor:
         """Return residual modulation for the given base embeddings.
@@ -126,7 +131,7 @@ class PrototypeStore:
             # Update metadata.
             self.metadata[proto_id, self._ACCESS_COUNT_IDX] = access_count + 1
             self.metadata[proto_id, self._LAST_ACCESS_STEP_IDX] = float(step)
-            if self.metadata[proto_id, self._CREATED_STEP_IDX].item() == 0:
+            if self.metadata[proto_id, self._CREATED_STEP_IDX].item() < 0:
                 self.metadata[proto_id, self._CREATED_STEP_IDX] = float(step)
 
             # Strength grows logarithmically and caps at 5.0.

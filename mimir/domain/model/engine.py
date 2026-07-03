@@ -10,4 +10,6 @@ class EmbeddingEngine(Protocol):
 
     output_dim: int
 
-    def encode(self, texts: list[str], batch_size: int = 32) -> torch.Tensor: ...
+    def encode(self, texts: list[str], batch_size: int = 32) -> torch.Tensor:
+        """Embed a list of texts into a tensor of shape (n, output_dim)."""
+        ...

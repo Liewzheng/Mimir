@@ -11,13 +11,12 @@ import pickle
 import queue
 import re
 import subprocess
-import tempfile
 import threading
 from collections import deque
 from collections.abc import Callable
 from functools import wraps
 from pathlib import Path
-from typing import Any, Literal, TypeVar, cast
+from typing import Any, Literal, NamedTuple, TypeVar, cast
 
 from mimir.adapters.agents import InMemoryAgentAdapter
 from mimir.application.factories import create_embedding_engine
@@ -25,6 +24,7 @@ from mimir.core.config import MimirConfig
 from mimir.domain.model import Message
 from mimir.infrastructure.context_discovery import ContextDiscovery
 from mimir.infrastructure.filtering import FilterConfig, FilterEngine
+from mimir.infrastructure.persistence import atomic_write
 from mimir.infrastructure.quality_gate import QualityGate, QualityResult
 from mimir.infrastructure.redaction import Redactor
 from mimir.infrastructure.store_queue import MemoryStoreQueue
@@ -50,25 +50,11 @@ _CHECKPOINT_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 _MAX_LOAD_ERRORS = 32
 
 
-def _atomic_write(path: Path, data: str) -> None:
-    """Write ``data`` to ``path`` atomically via a temp file + rename."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        dir=path.parent,
-        prefix=f".{path.name}.",
-        suffix=".tmp",
-        delete=False,
-        mode="w",
-        encoding="utf-8",
-    ) as tmp_file:
-        tmp_path = Path(tmp_file.name)
-        try:
-            tmp_file.write(data)
-            tmp_file.flush()
-            os.replace(tmp_path, path)
-        except OSError:
-            tmp_path.unlink(missing_ok=True)
-            raise
+class CheckpointPaths(NamedTuple):
+    """Paths for a Mimir checkpoint and its memories sidecar."""
+
+    mimir: Path
+    memories: Path
 
 
 def _memory_key(item: dict[str, Any]) -> str:
@@ -328,7 +314,7 @@ class SessionManager:
                 len(texts),
                 self.workspace_path,
             )
-        except Exception:  # noqa: BLE001
+        except (OSError, RuntimeError, ValueError, TypeError):
             logger.exception("Failed to load project context")
 
     def _prepare_text(self, text: str, source: Literal["mcp", "hook"]) -> str | None:
@@ -355,7 +341,7 @@ class SessionManager:
 
         try:
             candidate_embedding = self.adapter.encode([safe_text])[0]
-        except Exception:  # noqa: BLE001
+        except (OSError, RuntimeError, ValueError, TypeError):
             logger.exception("Failed to encode candidate for duplicate check")
             return None
 
@@ -468,7 +454,7 @@ class SessionManager:
 
         merged = _merge_memories_state(on_disk, in_memory)
         self.adapter.load_memories_state(merged)
-        _atomic_write(
+        atomic_write(
             self.memories_path,
             json.dumps(merged, indent=2),
         )
@@ -669,7 +655,7 @@ class SessionManager:
             self.adapter.learn([text])
 
         self.adapter.checkpoint(self.session_checkpoint_name)
-        _atomic_write(
+        atomic_write(
             self.memories_path,
             json.dumps(self.adapter.memories_state(), indent=2),
         )
@@ -689,9 +675,9 @@ class SessionManager:
             "memory_count": 0,
         }
 
-    def _checkpoint_paths(self, name: str) -> tuple[Path, Path]:
+    def _checkpoint_paths(self, name: str) -> CheckpointPaths:
         """Return the Mimir checkpoint and memories sidecar paths for ``name``."""
-        return (
+        return CheckpointPaths(
             self.checkpoints_dir / f"{name}.pt",
             self.checkpoints_dir / f"{name}_memories.json",
         )
@@ -700,11 +686,11 @@ class SessionManager:
     def checkpoint(self, name: str) -> dict[str, Any]:
         """Save a named checkpoint including Mimir state and memories."""
         _validate_checkpoint_name(name)
-        mimir_checkpoint, memories_checkpoint = self._checkpoint_paths(name)
+        paths = self._checkpoint_paths(name)
 
-        self.adapter.checkpoint(mimir_checkpoint.name)
-        _atomic_write(
-            memories_checkpoint,
+        self.adapter.checkpoint(paths.mimir.name)
+        atomic_write(
+            paths.memories,
             json.dumps(self.adapter.memories_state(), indent=2),
         )
         return {
@@ -717,16 +703,16 @@ class SessionManager:
     def restore(self, name: str) -> dict[str, Any]:
         """Restore a named checkpoint."""
         _validate_checkpoint_name(name)
-        mimir_checkpoint, memories_checkpoint = self._checkpoint_paths(name)
+        paths = self._checkpoint_paths(name)
 
-        if not mimir_checkpoint.exists():
+        if not paths.mimir.exists():
             available = [p.stem for p in self.checkpoints_dir.glob("*.pt")]
             raise FileNotFoundError(f"Checkpoint '{name}' not found. Available: {available}")
 
-        self.adapter.restore(mimir_checkpoint.name)
+        self.adapter.restore(paths.mimir.name)
 
-        if memories_checkpoint.exists():
-            data = json.loads(memories_checkpoint.read_text(encoding="utf-8"))
+        if paths.memories.exists():
+            data = json.loads(paths.memories.read_text(encoding="utf-8"))
             self.adapter.load_memories_state(data)
         else:
             self.adapter.clear_memories()
@@ -745,6 +731,10 @@ class SessionManager:
         dictionary with ``enabled`` (True), ``pending_count``, and ``worker_alive``.
         """
         available = sorted(p.stem for p in self.checkpoints_dir.glob("*.pt"))
+        workspace_str = str(self.workspace_dir)
+        sanitized_errors = [
+            error.replace(workspace_str, "<workspace>") for error in self._load_errors
+        ]
         result: dict[str, Any] = {
             "workspace": str(self.workspace_path),
             "workspace_hash": self.workspace_hash,
@@ -754,7 +744,7 @@ class SessionManager:
             "capacity_usage": self.adapter.capacity_usage,
             "step": self.adapter.step,
             "checkpoints": available,
-            "load_errors": list(self._load_errors),
+            "load_errors": sanitized_errors,
         }
         if self._store_queue is not None:
             result["async_store"] = {

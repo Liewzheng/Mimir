@@ -85,4 +85,4 @@ class SentenceTransformerEngine:
             convert_to_tensor=True,
             show_progress_bar=False,
         )
-        return torch.as_tensor(embeddings).to(self._device)
+        return torch.as_tensor(embeddings).cpu().float()

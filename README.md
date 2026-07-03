@@ -129,6 +129,7 @@ Instead of editing config files by hand, you can install hooks automatically:
 mimir setup kimi-code
 mimir setup claude-code
 mimir setup codex
+mimir setup opencode
 ```
 
 Use `--base-dir` to write the configuration somewhere other than the agent's
@@ -140,6 +141,95 @@ mimir setup kimi-code --base-dir ~/my-configs/kimi-code
 
 This writes the correct hook definitions for each agent CLI and is safe to run
 multiple times.
+
+## For AI Agents
+
+If you are an AI agent installing Mimir on behalf of a user, use this checklist.
+
+### 1. Install Mimir
+
+```bash
+pip install mimir-core
+```
+
+Or install from the repo root:
+
+```bash
+pip install -e .
+```
+
+Verify:
+
+```bash
+mimir --help
+python -m mimir.hooks.mimir_turn --help
+```
+
+### 2. Start an embedding backend
+
+Choose one backend. The default is `llama-server` at `http://127.0.0.1:11435`.
+
+- **sentence-transformer** — easiest, no extra server, first load ~20s:
+  ```bash
+  mimir mcp --backend sentence-transformer
+  ```
+- **llama-server** — higher quality, requires a running server:
+  ```bash
+  llama-server \
+    --model Qwen3-Embedding-8B-Q4_K_M.gguf \
+    --embeddings \
+    --port 11435
+  ```
+- **ollama** — if the user already runs Ollama:
+  ```bash
+  mimir mcp --backend ollama --base-url http://127.0.0.1:11434 --model ...
+  ```
+
+### 3. Add the MCP server to the user's agent config
+
+- **OpenCode** (`~/.config/opencode/opencode.json`):
+  ```json
+  {
+    "mcp": {
+      "mimir": {
+        "type": "local",
+        "command": ["mimir", "mcp", "--backend", "sentence-transformer"]
+      }
+    }
+  }
+  ```
+- **Claude Code / Kimi Code / Codex** (`.mcp.json`):
+  ```json
+  {
+    "mcpServers": {
+      "mimir": {
+        "command": "mimir",
+        "args": ["mcp", "--backend", "sentence-transformer"]
+      }
+    }
+  }
+  ```
+
+### 4. Install automatic agent hooks (optional)
+
+```bash
+mimir setup kimi-code
+mimir setup claude-code
+mimir setup codex
+mimir setup opencode
+```
+
+This adds `UserPromptSubmit`/`Stop` hooks so Mimir recalls context on each turn
+and stores the user/assistant exchange automatically.
+
+### 5. Tell the user to restart their agent CLI
+
+MCP servers and hooks are loaded on startup. After restarting, the agent can use:
+
+- `store(text)` / `recall(query)` via MCP.
+- Automatic recall/store via hooks if installed.
+
+---
 
 #### Manual hook configuration
 
@@ -352,6 +442,59 @@ Mimir is currently **v0.3.0**.
 - [ ] HITL preview before storing high-impact memories
 
 See [`docs/roadmap.md`](docs/roadmap.md) for the full roadmap.
+
+---
+
+## Development
+
+Mimir uses [GitHub Actions](.github/workflows/ci.yml) to run checks on every
+push and PR. The CI matrix tests Python 3.10, 3.11, and 3.12, plus the OpenCode
+TypeScript plugin.
+
+Set up a local development environment:
+
+```bash
+pip install -e ".[dev,server,api]"
+```
+
+The extras are:
+
+- `dev` — pytest, ruff, mypy
+- `server` — sentence-transformers embedding backend
+- `api` — OpenAI-compatible client dependencies
+
+Run the same checks as CI:
+
+```bash
+ruff check mimir
+mypy mimir
+python -m pytest --tb=short
+```
+
+For the OpenCode plugin you need **Node.js 20+**:
+
+```bash
+cd plugins/opencode
+npm ci
+npm run typecheck
+```
+
+### Secret scanning
+
+Some test fixtures and evaluation data contain intentionally fake secrets or
+public benchmark dialogue. These files are listed in `.gitleaksignore` so
+Gitleaks does not flag them. Do **not** add real credentials to those files or
+to the ignore list.
+
+Run Gitleaks locally before committing:
+
+```bash
+gitleaks detect --source . --verbose
+```
+
+If it reports a false positive in test/eval data, add the file to
+`.gitleaksignore` only after confirming it contains no real credentials, and
+keep the ignore list in sync with CI.
 
 ---
 

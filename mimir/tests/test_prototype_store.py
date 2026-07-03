@@ -118,3 +118,18 @@ def test_decay_does_not_collapse_prototypes(store: PrototypeStore) -> None:
 
     assert torch.all(torch.isfinite(store.prototypes))
     assert torch.all(torch.isfinite(store.metadata))
+
+
+def test_created_step_not_overwritten_on_later_updates(store: PrototypeStore) -> None:
+    """A prototype created at step 0 should keep its created_step after step 1."""
+    target = torch.randn(1, 8)
+    target = target / torch.linalg.norm(target)
+
+    updated = store.update_nearest(target, step=0)
+    proto_id = updated[0]
+    created_at_step_0 = store.metadata[proto_id, store._CREATED_STEP_IDX].item()
+    assert created_at_step_0 == 0.0
+
+    store.update_nearest(target, step=1)
+    created_at_step_1 = store.metadata[proto_id, store._CREATED_STEP_IDX].item()
+    assert created_at_step_1 == 0.0

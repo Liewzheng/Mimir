@@ -185,6 +185,116 @@ def test_stop_saves_exchange(tmp_path: Path) -> None:
         session.close()
 
 
+def test_stop_saves_exchange_from_codex_transcript(tmp_path: Path) -> None:
+    """Codex provides transcript_path JSONL when it lacks inline messages."""
+    transcript = [
+        {
+            "timestamp": "2026-06-30T00:00:00.000Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "user",
+                "content": [{"type": "input_text", "text": "记住我喜欢用中文"}],
+            },
+        },
+        {
+            "timestamp": "2026-06-30T00:00:01.000Z",
+            "type": "response_item",
+            "payload": {
+                "type": "reasoning",
+                "summary": [{"type": "summary", "text": "thinking"}],
+            },
+        },
+        {
+            "timestamp": "2026-06-30T00:00:02.000Z",
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "好的，我会用中文回复你。"}],
+            },
+        },
+    ]
+    transcript_path = tmp_path / "transcript.jsonl"
+    transcript_path.write_text(
+        "\n".join(json.dumps(line, ensure_ascii=False) for line in transcript),
+        encoding="utf-8",
+    )
+
+    payload = {
+        "hook_event_name": "Stop",
+        "transcript_path": str(transcript_path),
+    }
+    base_dir = tmp_path / ".mimir"
+    code, _stdout, _stderr = _run_hook(
+        payload,
+        base_dir=base_dir,
+        extra_args=["--workspace-path", str(tmp_path / "workspace")],
+    )
+    assert code == 0
+
+    session = SessionManager(
+        backend="fake",
+        workspace_path=tmp_path / "workspace",
+        base_dir=base_dir,
+    )
+    try:
+        result = session.recall("中文", top_k=3)
+        assert len(result["results"]) > 0
+        texts = {r["text"] for r in result["results"]}
+        assert any("中文" in t for t in texts)
+    finally:
+        session.close()
+
+
+def test_stop_prefers_inline_messages_over_transcript(tmp_path: Path) -> None:
+    """When inline messages are present, transcript_path should be ignored."""
+    transcript_path = tmp_path / "transcript.jsonl"
+    transcript_path.write_text(
+        json.dumps(
+            {
+                "type": "response_item",
+                "payload": {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "transcript content"}],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    payload = {
+        "hook_event_name": "Stop",
+        "transcript_path": str(transcript_path),
+        "messages": [
+            {"role": "user", "content": "inline user"},
+            {"role": "assistant", "content": "inline assistant"},
+        ],
+    }
+    base_dir = tmp_path / ".mimir"
+    code, _stdout, _stderr = _run_hook(
+        payload,
+        base_dir=base_dir,
+        extra_args=["--workspace-path", str(tmp_path / "workspace")],
+    )
+    assert code == 0
+
+    session = SessionManager(
+        backend="fake",
+        workspace_path=tmp_path / "workspace",
+        base_dir=base_dir,
+    )
+    try:
+        result = session.recall("inline", top_k=3)
+        texts = {r["text"] for r in result["results"]}
+        assert any("inline user" in t for t in texts)
+        assert any("inline assistant" in t for t in texts)
+        assert not any("transcript content" in t for t in texts)
+    finally:
+        session.close()
+
+
 def test_stop_saves_last_assistant_message(tmp_path: Path) -> None:
     """Claude Code / Codex expose only ``last_assistant_message``."""
     payload = {

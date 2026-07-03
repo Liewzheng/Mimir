@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import cast
 
+import numpy as np
 import pytest
 import torch
 
@@ -58,7 +59,8 @@ def test_recall_returns_relevant_memories(adapter: InMemoryAgentAdapter) -> None
     results = adapter.recall("I like apples", top_k=1)
     assert len(results) == 1
     assert "apple" in results[0].text.lower()
-    assert 0.0 <= results[0].score <= 1.0 + 1e-6
+    # Multiplicative lifecycle boost can push the score above 1.0.
+    assert 0.0 <= results[0].score <= 1.0 + 0.3 + 1e-6
 
 
 def test_recall_respects_min_score(adapter: InMemoryAgentAdapter) -> None:
@@ -224,8 +226,6 @@ def test_clear_memories(adapter: InMemoryAgentAdapter) -> None:
 
 
 def test_memories_state_with_torch_embedding(adapter: InMemoryAgentAdapter) -> None:
-    import torch
-
     adapter._memories.append(
         Memory(
             text="torch",
@@ -240,8 +240,6 @@ def test_memories_state_with_torch_embedding(adapter: InMemoryAgentAdapter) -> N
 
 
 def test_memories_state_with_numpy_embedding(adapter: InMemoryAgentAdapter) -> None:
-    import numpy as np
-
     adapter._memories.append(
         Memory(
             text="numpy",

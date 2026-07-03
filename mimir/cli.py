@@ -20,19 +20,19 @@ def _build_parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument(
         "--backend",
-        choices=["llama-server", "sentence-transformer", "fake"],
+        choices=["llama-server", "sentence-transformer", "ollama", "fake"],
         default="llama-server",
         help="Embedding backend to use",
     )
     common.add_argument(
         "--base-url",
         default="http://127.0.0.1:11435",
-        help="Base URL for llama-server backend",
+        help="Base URL for llama-server or ollama backend",
     )
     common.add_argument(
         "--model",
         default="all-MiniLM-L6-v2",
-        help="Model name for sentence-transformer backend",
+        help="Model name for sentence-transformer or ollama backend",
     )
 
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -85,8 +85,12 @@ def _create_engine(args: argparse.Namespace) -> EmbeddingEngine:
 def _create_mimir(args: argparse.Namespace) -> Mimir:
     """Create an Mimir instance from CLI arguments."""
     engine = _create_engine(args)
+    if args.backend == "sentence-transformer" or args.backend == "ollama":
+        base_model = args.model
+    else:
+        base_model = args.base_url
     config = MimirConfig(
-        base_model=args.model if args.backend == "sentence-transformer" else args.base_url,
+        base_model=base_model,
         num_prototypes=64,
         learning_rate_base=0.05,
     )
