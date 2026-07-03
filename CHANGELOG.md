@@ -7,8 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-03
+
 ### Added
 
+- **Async embedding queue**: `store()` can be configured to return immediately
+  (`{"stored": "pending"}`) while a background worker handles embedding,
+  duplicate checks, learning, and persistence. Configurable via
+  `MimirConfig(async_store_enabled=True)`.
 - **Secret redaction**: automatic masking of API keys, GitHub tokens, JWTs,
   passwords, AWS credentials, and `Authorization` headers before memories are
   stored.
@@ -27,8 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of texts, usable for custom duplicate checks or integrations.
 - **New `MimirConfig` fields**: `quality_gate_enabled`,
   `quality_gate_duplicate_threshold`, `quality_gate_contradiction_threshold`,
-  `project_context_enabled`, `project_context_importance`, and
-  `redaction_patterns` (custom regex list; `None` = defaults, `[]` = disabled).
+  `project_context_enabled`, `project_context_importance`,
+  `redaction_patterns` (custom regex list; `None` = defaults, `[]` = disabled), and
+  `async_store_enabled` / `async_store_queue_size` /
+  `async_store_flush_timeout` for non-blocking `store()`.
 
 ### Changed
 
@@ -50,3 +58,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   memory already exists in the loaded state.
 - `Redactor` now accepts plain regex strings in addition to compiled pattern
   objects.
+
+## [0.2.0] - 2026-07-01
+
+- Initial release of Mimir core: plastic memory well with PPN, hybrid retrieval,
+  and agent adapter.
+
+[Unreleased]: https://github.com/Liewzheng/Mimir/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/Liewzheng/Mimir/compare/v0.2.0...v0.3.0
+[0.2.0]: https://github.com/Liewzheng/Mimir/releases/tag/v0.2.0

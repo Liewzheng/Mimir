@@ -5,14 +5,19 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
 import pickle
+import queue
 import re
 import subprocess
 import tempfile
+import threading
 from collections import deque
+from collections.abc import Callable
+from functools import wraps
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, TypeVar, cast
 
 from mimir.adapters.agents import InMemoryAgentAdapter
 from mimir.application.factories import create_embedding_engine
@@ -22,8 +27,24 @@ from mimir.infrastructure.context_discovery import ContextDiscovery
 from mimir.infrastructure.filtering import FilterConfig, FilterEngine
 from mimir.infrastructure.quality_gate import QualityGate, QualityResult
 from mimir.infrastructure.redaction import Redactor
+from mimir.infrastructure.store_queue import MemoryStoreQueue
 
 logger = logging.getLogger(__name__)
+
+
+T = TypeVar("T", bound=Callable[..., Any])
+
+
+def _locked(method: T) -> T:
+    """Decorator that acquires the adapter lock around a SessionManager method."""
+
+    @wraps(method)
+    def wrapper(self: SessionManager, *args: Any, **kwargs: Any) -> Any:
+        with self._adapter_lock:
+            return method(self, *args, **kwargs)
+
+    return cast(T, wrapper)
+
 
 _CHECKPOINT_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]+$")
 _MAX_LOAD_ERRORS = 32
@@ -148,6 +169,10 @@ class SessionManager:
         base_dir: str | Path | None = None,
         num_prototypes: int = 64,
         top_k: int = 4,
+        *,
+        async_store_enabled: bool = False,
+        async_store_queue_size: int = 1000,
+        async_store_flush_timeout: float = 5.0,
     ) -> None:
         """Initialize the session manager.
 
@@ -160,6 +185,10 @@ class SessionManager:
                 ``~/.mimir/workspaces``.
             num_prototypes: Number of prototypes in the Mimir store.
             top_k: Number of prototypes to activate during inference.
+            async_store_enabled: Whether to defer embedding/learning to a
+                background worker for non-blocking ``store()`` calls.
+            async_store_queue_size: Max pending items for the async queue.
+            async_store_flush_timeout: Seconds to wait for queue flush on close.
         """
         self.backend = backend
         self.base_url = base_url
@@ -188,6 +217,9 @@ class SessionManager:
             base_model=model if backend == "sentence-transformer" else base_url,
             num_prototypes=num_prototypes,
             top_k=top_k,
+            async_store_enabled=async_store_enabled,
+            async_store_queue_size=async_store_queue_size,
+            async_store_flush_timeout=async_store_flush_timeout,
         )
         self.config = config
         self.adapter = InMemoryAgentAdapter(
@@ -215,6 +247,17 @@ class SessionManager:
             contradiction_threshold=config.quality_gate_contradiction_threshold,
         )
         self.context_discovery = ContextDiscovery()
+
+        self._store_queue: MemoryStoreQueue | None = None
+        if config.async_store_enabled:
+            self._store_queue = MemoryStoreQueue(
+                processor=self._async_process,
+                max_size=config.async_store_queue_size,
+            )
+
+        # Protect adapter state when the async worker and MCP request handlers
+        # may access it concurrently.
+        self._adapter_lock = threading.RLock()
 
         self._load_errors: deque[str] = deque(maxlen=_MAX_LOAD_ERRORS)
 
@@ -344,6 +387,37 @@ class SessionManager:
         )
         return self.adapter.learn(safe_texts, importance=importance)
 
+    def _async_process(self, safe_text: str, importance: float) -> dict[str, Any]:
+        """Background processor for the async store queue.
+
+        Runs the same quality gate and learning pipeline as the synchronous
+        :meth:`store`, but without returning the result to the original caller.
+        Contradiction hints are not surfaced because the caller has already
+        received the pending response. The adapter lock is held while the
+        adapter state is read or mutated.
+        """
+        with self._adapter_lock:
+            try:
+                dup = self._duplicate_check(safe_text)
+                if dup is not None and not dup.ok:
+                    logger.debug("Async store dropped duplicate: %s", safe_text[:80])
+                    return {
+                        "stored": False,
+                        "reason": dup.reason,
+                        "memory_count": self.adapter.memory_count,
+                    }
+
+                report = self._observe_and_learn([safe_text], importance=importance)
+                self._save()
+                return {
+                    "stored": True,
+                    "memory_count": self.adapter.memory_count,
+                    "capacity_usage": report.get("capacity_usage", 0.0),
+                }
+            except Exception:
+                logger.exception("Async store processor failed for text: %s", safe_text[:80])
+                return {"stored": False, "reason": "processor_error", "memory_count": self.adapter.memory_count}
+
     def _contradiction_hints(self) -> list[dict[str, Any]]:
         """Return a list of contradiction hints for the current working memory."""
         if not self.config.quality_gate_enabled:
@@ -371,6 +445,7 @@ class SessionManager:
                 self._record_load_error(f"Failed to migrate legacy checkpoint from {legacy_path}")
                 logger.exception("Failed to migrate legacy checkpoint")
 
+    @_locked
     def _save(self) -> None:
         """Persist the current Mimir state and working memory.
 
@@ -401,51 +476,33 @@ class SessionManager:
     def close(self) -> None:
         """Persist session state on shutdown.
 
+        If an async store queue is active, remaining items are flushed before
+        the worker is stopped. Any item that cannot be processed within the
+        configured timeout is logged as a warning.
+
         Raises:
             OSError: If the session state cannot be written to disk.  Callers
                 should handle this to avoid silent data loss.
         """
+        if self._store_queue is not None:
+            timeout = self.config.async_store_flush_timeout
+            flushed = self._store_queue.flush(timeout=timeout)
+            if not flushed:
+                logger.warning(
+                    "Async store queue did not flush within %s seconds; "
+                    "some pending memories may be lost",
+                    timeout,
+                )
+            stopped = self._store_queue.stop(timeout=timeout)
+            if not stopped:
+                logger.warning("Async store worker did not stop within %s seconds", timeout)
+
         self._save()
         logger.info("Saved session state to %s", self.workspace_dir)
 
-    def store(self, text: str, importance: float = 1.0) -> dict[str, Any]:
-        """Store a text in memory and learn from it.
-
-        Non-empty strings only; empty text is a no-op. After learning, the
-        session checkpoint and memories sidecar are persisted so that agent CLI
-        hooks can recall the new memory immediately.
-
-        The response ``text`` field is the redacted form, so callers never
-        receive secrets back.
-
-        Returns:
-            A dictionary with at least these keys:
-
-            - ``stored`` (bool): whether the text was learned.
-            - ``text`` (str): the redacted text that was (or would have been)
-              stored.
-            - ``memory_count`` (int): current number of memories after the call.
-            - ``reason`` (str, optional): reason for rejection (filter/duplicate).
-            - ``similar_memory`` (str, optional): the closest existing memory when
-              a duplicate was blocked.
-            - ``capacity_usage`` (float, optional): current prototype usage when
-              storage succeeded.
-            - ``contradictions`` (list, optional): contradiction hints produced
-              after storage.
-        """
-        if not text or not isinstance(text, str):
-            return {"stored": False, "text": text, "memory_count": self.adapter.memory_count}
-
-        safe_text = self._prepare_text(text, source="mcp")
-        if safe_text is None:
-            filter_result = self.filter_engine.should_store(text, source="mcp")
-            return {
-                "stored": False,
-                "text": self.redactor.redact(text),
-                "memory_count": self.adapter.memory_count,
-                "reason": filter_result.reason,
-            }
-
+    @_locked
+    def _sync_store_core(self, safe_text: str, importance: float) -> dict[str, Any]:
+        """Run the synchronous duplicate check, learn, and persist pipeline."""
         dup = self._duplicate_check(safe_text)
         if dup is not None and not dup.ok:
             similar_memory = dup.similar_memory or ""
@@ -473,6 +530,85 @@ class SessionManager:
             response["contradictions"] = contradiction_hints
         return response
 
+    def _async_enqueue_store(self, safe_text: str, importance: float) -> dict[str, Any]:
+        """Enqueue the text for the async store worker without holding the adapter lock."""
+        assert self._store_queue is not None
+        try:
+            self._store_queue.put(safe_text, importance=importance)
+        except queue.Full:
+            return {
+                "stored": False,
+                "text": safe_text,
+                "memory_count": self.adapter.memory_count,
+                "reason": "queue_full",
+            }
+        return {
+            "stored": "pending",
+            "text": safe_text,
+            "memory_count": self.adapter.memory_count,
+            "pending_count": self._store_queue.pending_count,
+        }
+
+    def store(self, text: str, importance: float = 1.0) -> dict[str, Any]:
+        """Store a text in memory and learn from it.
+
+        Non-empty strings only; empty text is a no-op. After learning, the
+        session checkpoint and memories sidecar are persisted so that agent CLI
+        hooks can recall the new memory immediately.
+
+        The response ``text`` field is the redacted form, so callers never
+        receive secrets back.
+
+        If ``MimirConfig.async_store_enabled`` is True, the expensive embedding
+        and learning steps are deferred to a background worker. In that case the
+        response contains ``{"stored": "pending"}`` until the worker eventually
+        processes the item.
+
+        Returns:
+            A dictionary with at least these keys:
+
+            - ``stored`` (bool or "pending"): whether the text was learned, or
+              "pending" when async processing has been queued.
+            - ``text`` (str): the redacted text that was (or would have been)
+              stored.
+            - ``memory_count`` (int): current number of memories after the call.
+            - ``reason`` (str, optional): reason for rejection (filter/duplicate).
+            - ``similar_memory`` (str, optional): the closest existing memory when
+              a duplicate was blocked.
+            - ``capacity_usage`` (float, optional): current prototype usage when
+              storage succeeded.
+            - ``contradictions`` (list, optional): contradiction hints produced
+              after storage.
+            - ``pending_count`` (int, optional): number of items queued when
+              ``stored`` is "pending".
+        """
+        if not text or not isinstance(text, str):
+            return {"stored": False, "text": text, "memory_count": self.adapter.memory_count}
+
+        safe_text = self._prepare_text(text, source="mcp")
+        if safe_text is None:
+            filter_result = self.filter_engine.should_store(text, source="mcp")
+            return {
+                "stored": False,
+                "text": self.redactor.redact(text),
+                "memory_count": self.adapter.memory_count,
+                "reason": filter_result.reason,
+            }
+
+        if not isinstance(importance, (int, float)) or importance < 0 or math.isnan(importance) or math.isinf(importance):
+            return {
+                "stored": False,
+                "text": safe_text,
+                "memory_count": self.adapter.memory_count,
+                "reason": "invalid_importance",
+            }
+
+        if self._store_queue is not None:
+            return self._async_enqueue_store(safe_text, importance=importance)
+
+        return self._sync_store_core(safe_text, importance=importance)
+
+    @_locked
     def recall(
         self,
         query: str,
@@ -493,6 +629,7 @@ class SessionManager:
             ],
         }
 
+    @_locked
     def consolidate(self) -> dict[str, Any]:
         """Reinforce all memories in the working buffer."""
         before = self.adapter.memory_count
@@ -503,6 +640,7 @@ class SessionManager:
             "memory_count": self.adapter.memory_count,
         }
 
+    @_locked
     def list_memories(self) -> dict[str, Any]:
         """Return all working-memory texts as a numbered list."""
         memories = [
@@ -514,6 +652,7 @@ class SessionManager:
             "memories": memories,
         }
 
+    @_locked
     def replace_memories(self, memories: list[str]) -> dict[str, Any]:
         """Replace all working memories with a new list of texts.
 
@@ -539,6 +678,7 @@ class SessionManager:
             "memory_count": self.adapter.memory_count,
         }
 
+    @_locked
     def forget(self) -> dict[str, Any]:
         """Reset the session state."""
         count = self.adapter.memory_count
@@ -556,6 +696,7 @@ class SessionManager:
             self.checkpoints_dir / f"{name}_memories.json",
         )
 
+    @_locked
     def checkpoint(self, name: str) -> dict[str, Any]:
         """Save a named checkpoint including Mimir state and memories."""
         _validate_checkpoint_name(name)
@@ -572,6 +713,7 @@ class SessionManager:
             "memory_count": self.adapter.memory_count,
         }
 
+    @_locked
     def restore(self, name: str) -> dict[str, Any]:
         """Restore a named checkpoint."""
         _validate_checkpoint_name(name)
@@ -595,10 +737,15 @@ class SessionManager:
             "memory_count": self.adapter.memory_count,
         }
 
+    @_locked
     def status(self) -> dict[str, Any]:
-        """Return session statistics."""
+        """Return session statistics.
+
+        When async store is enabled, the response includes an ``async_store``
+        dictionary with ``enabled`` (True), ``pending_count``, and ``worker_alive``.
+        """
         available = sorted(p.stem for p in self.checkpoints_dir.glob("*.pt"))
-        return {
+        result: dict[str, Any] = {
             "workspace": str(self.workspace_path),
             "workspace_hash": self.workspace_hash,
             "backend": self.backend,
@@ -609,3 +756,10 @@ class SessionManager:
             "checkpoints": available,
             "load_errors": list(self._load_errors),
         }
+        if self._store_queue is not None:
+            result["async_store"] = {
+                "enabled": True,
+                "pending_count": self._store_queue.pending_count,
+                "worker_alive": self._store_queue.is_alive,
+            }
+        return result
