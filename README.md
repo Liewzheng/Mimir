@@ -498,6 +498,37 @@ keep the ignore list in sync with CI.
 
 ---
 
+## Skill Distillation (experimental)
+
+Mimir can observe the tools your agent calls and automatically extract reusable
+skills / aliases when the same command pattern repeats.
+
+Enable it in your Kimi Code configuration:
+
+```toml
+[[hooks]]
+event = "PostToolUse"
+command = "python3 -m mimir.hooks.skill_observer"
+timeout = 5
+```
+
+How it works:
+
+1. Every `PostToolUse` event is recorded in a short-term working buffer.
+2. Shell commands are clustered by their first meaningful token(s).
+3. A "frustration score" accumulates for clusters that repeat: long, stable
+   commands score higher than short or noisy ones.
+4. When the score crosses a threshold, the cluster is extracted as a skill and
+   stored in `skills.jsonl` inside the workspace directory.
+5. Top skills are injected into the agent context so the agent can reuse them
+   on subsequent turns.
+
+This is a Phase 1 prototype: it observes and suggests, but does not intercept or
+block tool calls. See [`docs/skill-distillation.md`](docs/skill-distillation.md)
+for the full design.
+
+---
+
 ## Embedding Backend Performance
 
 Mimir supports multiple embedding backends. Choose based on your hardware and latency requirements.

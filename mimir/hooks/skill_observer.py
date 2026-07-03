@@ -11,10 +11,10 @@ import argparse
 import json
 import logging
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from mimir.infrastructure.persistence.atomic_write import atomic_write_json
 from mimir.infrastructure.redaction import Redactor
 from mimir.mcp.session import _detect_workspace_path, _workspace_hash
 from mimir.skills.extractor import Skeleton
@@ -25,6 +25,11 @@ from mimir.skills.tracker import CommandEvent, SkillTracker
 logger = logging.getLogger(__name__)
 
 _DEFAULT_BASE_DIR = Path.home() / ".mimir" / "workspaces"
+_MAX_STDIN_BYTES = 10 * 1024 * 1024  # 10 MiB
+
+
+class SkillObserverError(Exception):
+    """Base error for the skill observer hook."""
 
 
 def _extract_command(tool_name: str, tool_input: dict[str, Any]) -> str:
@@ -41,7 +46,9 @@ def _workspace_dir(base_dir: Path, workspace_path: Path) -> Path:
     base = base_dir.resolve()
     target = (base / _workspace_hash(workspace_path)).resolve()
     if not target.is_relative_to(base):
-        raise ValueError(f"Workspace path {workspace_path!r} resolves outside the base directory")
+        raise SkillObserverError(
+            f"Workspace path {workspace_path!r} resolves outside the base directory"
+        )
     return target
 
 
@@ -51,6 +58,8 @@ def _load_tracker(workspace_dir: Path) -> SkillTracker:
     if tracker_path.exists():
         try:
             data = json.loads(tracker_path.read_text(encoding="utf-8"))
+            if not isinstance(data, dict):
+                raise SkillObserverError("corrupted tracker state: not a JSON object")
             tracker = SkillTracker()
             tracker.restore(data)
             return tracker
@@ -61,11 +70,12 @@ def _load_tracker(workspace_dir: Path) -> SkillTracker:
 
 def _save_tracker(tracker: SkillTracker, workspace_dir: Path) -> None:
     """Persist the full tracker state across hook invocations."""
+    workspace_dir.mkdir(parents=True, exist_ok=True)
     tracker_path = workspace_dir / "skill_tracker_state.json"
-    tracker_path.write_text(json.dumps(tracker.state(), indent=2), encoding="utf-8")
+    atomic_write_json(tracker_path, tracker.state())
 
 
-def _extract_skill(cluster_key: str, cluster: Any) -> Skill | None:
+def _extract_skill(cluster_key: str, cluster: Any, skill_counter: int) -> Skill | None:
     """Convert a ready cluster into a skill record."""
     skeleton: Skeleton | None = getattr(cluster, "skeleton", None)
     if skeleton is None or not skeleton.template:
@@ -73,7 +83,7 @@ def _extract_skill(cluster_key: str, cluster: Any) -> Skill | None:
     # Use the cluster key as a base name; clean it for human readability.
     name = cluster_key.replace("Shell:", "").replace("Tool:", "").replace("<empty>", "empty")
     skill_type = "alias" if skeleton.variable_count == 0 else "workflow"
-    skill_id = f"{name}_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
+    skill_id = f"{name}_{skill_counter}"
     return Skill(
         id=skill_id,
         type=skill_type,  # type: ignore[arg-type]
@@ -95,6 +105,7 @@ def handle_post_tool_use(
     ws_dir = _workspace_dir(base_dir, workspace_path)
     tracker = tracker or _load_tracker(ws_dir)
     store = SkillStore(ws_dir / "skills.jsonl")
+    injector = SkillInjector(InjectorConfig(max_active=10, min_confidence=0.85))
 
     redactor = Redactor()
     tool_name = payload.get("tool_name", "")
@@ -105,8 +116,10 @@ def handle_post_tool_use(
     tracker.observe(event)
 
     extracted: list[Skill] = []
+    skill_counter = 1
     for cluster in tracker.ready_clusters():
-        skill = _extract_skill(cluster.key, cluster)
+        skill = _extract_skill(cluster.key, cluster, skill_counter)
+        skill_counter += 1
         if skill is not None:
             store.add(skill)
             extracted.append(skill)
@@ -114,15 +127,31 @@ def handle_post_tool_use(
 
     _save_tracker(tracker, ws_dir)
 
-    injector = SkillInjector(InjectorConfig(max_active=10, min_confidence=0.85))
     injection = injector.inject(store.load())
 
     return {
         "status": "ok",
         "recorded": True,
+        "extracted_count": len(extracted),
         "extracted": [s.to_dict() for s in extracted],
         "injection": injection["formatted"],
     }
+
+
+def _read_stdin() -> str:
+    """Read stdin with a size limit to avoid memory exhaustion."""
+    data = sys.stdin.buffer.read(_MAX_STDIN_BYTES + 1)
+    if len(data) > _MAX_STDIN_BYTES:
+        raise SkillObserverError(f"stdin exceeds {_MAX_STDIN_BYTES} bytes limit")
+    return data.decode("utf-8", errors="replace")
+
+
+def _error_response(reason: str, format_name: str) -> None:
+    """Print a uniform error response."""
+    if format_name == "json":
+        print(json.dumps({"status": "error", "reason": reason}, ensure_ascii=False))
+    else:
+        print(f"[Mimir Skill Observer] error: {reason}")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -153,39 +182,46 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    workspace_path = _detect_workspace_path(args.workspace_path)
-    base_dir = args.base_dir or _DEFAULT_BASE_DIR
+    try:
+        workspace_path = _detect_workspace_path(args.workspace_path)
+        base_dir = args.base_dir or _DEFAULT_BASE_DIR
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("Failed to initialize workspace path")
+        _error_response(str(exc), args.format)
+        return 1
 
-    payload_text = sys.stdin.read()
+    try:
+        payload_text = _read_stdin()
+    except SkillObserverError as exc:
+        logger.error("stdin error: %s", exc)
+        _error_response(str(exc), args.format)
+        return 1
+
     if not payload_text:
         logger.warning("No event payload on stdin")
-        if args.format == "json":
-            print(json.dumps({"status": "error", "reason": "empty stdin"}, ensure_ascii=False))
-        return 0
+        _error_response("empty stdin", args.format)
+        return 1
 
     try:
         payload = json.loads(payload_text)
     except json.JSONDecodeError as exc:
         logger.error("Invalid JSON on stdin: %s", exc)
-        if args.format == "json":
-            print(
-                json.dumps(
-                    {"status": "error", "reason": f"invalid JSON: {exc}"},
-                    ensure_ascii=False,
-                )
-            )
-        return 0
+        _error_response(f"invalid JSON: {exc}", args.format)
+        return 1
 
     try:
         result = handle_post_tool_use(payload, workspace_path, base_dir)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Skill observer failed")
-        if args.format == "json":
-            print(json.dumps({"status": "error", "reason": str(exc)}, ensure_ascii=False))
-        return 0
+        _error_response(str(exc), args.format)
+        return 1
 
     if args.format == "json":
         print(json.dumps(result, ensure_ascii=False))
+    else:
+        print(f"[Mimir Skill Observer] recorded event; extracted {result['extracted_count']} skill(s)")
+        if result["injection"]:
+            print(result["injection"])
     return 0
 
 
