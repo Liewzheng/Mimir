@@ -171,6 +171,9 @@ class OpenCodeSetup:
         """Return True if ``entry`` already points to the Mimir plugin."""
         if isinstance(entry, str):
             return "mimir-opencode-plugin" in entry or str(self.plugin_path) == entry
+        if isinstance(entry, (list, tuple)) and len(entry) > 0:
+            package = entry[0]
+            return "mimir-opencode-plugin" in str(package) or str(self.plugin_path) == package
         if isinstance(entry, dict):
             package = entry.get("package", "")
             return "mimir-opencode-plugin" in str(package) or str(self.plugin_path) == package
@@ -183,21 +186,21 @@ class OpenCodeSetup:
             data = json.loads(self.config_path.read_text())
         except json.JSONDecodeError:
             return False
-        plugins = data.get("plugins", [])
+        plugins = data.get("plugin", [])
         return any(self._is_mimir_plugin(entry) for entry in plugins)
 
     def install(self) -> Path:
         self.config_dir.mkdir(parents=True, exist_ok=True)
         python = shutil.which("python3") or shutil.which("python") or sys.executable
-        plugin_entry = {
-            "package": str(self.plugin_path),
-            "options": {
+        plugin_entry: list[Any] = [
+            str(self.plugin_path),
+            {
                 "python": python,
                 "backend": "llama-server",
                 "baseUrl": "http://127.0.0.1:11435",
                 "model": "all-MiniLM-L6-v2",
             },
-        }
+        ]
         if self.config_path.exists():
             try:
                 data = json.loads(self.config_path.read_text())
@@ -206,7 +209,12 @@ class OpenCodeSetup:
         else:
             data = {}
 
-        plugins = data.setdefault("plugins", [])
+        # The correct OpenCode config key is the singular ``plugin``; remove any
+        # stale ``plugins`` array we may have written in earlier versions.
+        if isinstance(data.get("plugins"), list):
+            del data["plugins"]
+
+        plugins = data.setdefault("plugin", [])
         if not any(self._is_mimir_plugin(entry) for entry in plugins):
             plugins.append(plugin_entry)
 

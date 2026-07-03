@@ -92,8 +92,8 @@ class TestOpenCodeSetup:
         path = setup.install()
         assert path.exists()
         data = json.loads(path.read_text())
-        assert "plugins" in data
-        assert any(setup._is_mimir_plugin(entry) for entry in data["plugins"])
+        assert "plugin" in data
+        assert any(setup._is_mimir_plugin(entry) for entry in data["plugin"])
 
     def test_install_is_idempotent(self, tmp_path: Path) -> None:
         plugin_path = tmp_path / "mimir-opencode-plugin"
@@ -111,3 +111,17 @@ class TestOpenCodeSetup:
         assert not setup.is_installed()
         setup.install()
         assert setup.is_installed()
+
+    def test_install_migrates_stale_plugins_key(self, tmp_path: Path) -> None:
+        plugin_path = tmp_path / "mimir-opencode-plugin"
+        plugin_path.mkdir()
+        setup = OpenCodeSetup(config_dir=tmp_path, plugin_path=plugin_path)
+        setup.config_path.write_text(
+            json.dumps({"plugins": [{"package": str(plugin_path), "options": {}}]}),
+            encoding="utf-8",
+        )
+        setup.install()
+        data = json.loads(setup.config_path.read_text())
+        assert "plugins" not in data
+        assert "plugin" in data
+        assert any(setup._is_mimir_plugin(entry) for entry in data["plugin"])

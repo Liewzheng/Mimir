@@ -14,11 +14,8 @@ OpenCode 插件化集成 Mimir 长期记忆。
 
 ```json
 {
-  "plugins": [
-    {
-      "package": "file:///Users/isletspace/Workspace/gitlab.islet.space/engram/plugins/opencode",
-      "options": {}
-    }
+  "plugin": [
+    ["/Users/isletspace/Workspace/gitlab.islet.space/engram/plugins/opencode", {}]
   ]
 }
 ```
