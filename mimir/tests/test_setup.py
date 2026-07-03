@@ -56,16 +56,16 @@ class TestClaudeCodeSetup:
         setup = ClaudeCodeSetup(config_dir=tmp_path)
         path = setup.install()
         assert path.exists()
-        data = __import__("json").loads(path.read_text())
+        data = json.loads(path.read_text())
         assert "Stop" in data
         assert "UserPromptSubmit" in data
-        assert any("mimir_turn" in __import__("json").dumps(h) for h in data["Stop"])
+        assert any("mimir_turn" in json.dumps(h) for h in data["Stop"])
 
     def test_install_is_idempotent(self, tmp_path: Path) -> None:
         setup = ClaudeCodeSetup(config_dir=tmp_path)
         setup.install()
         setup.install()
-        data = __import__("json").loads(setup.settings_path.read_text())
+        data = json.loads(setup.settings_path.read_text())
         assert len(data["Stop"]) == 1
 
 

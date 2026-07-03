@@ -46,6 +46,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `SessionManager` now reuses the filtering / redaction / learning pipeline for
   both project context ingestion and explicit `store()` calls.
 - Project context importance default is now `1.5` (previously hard-coded `2.0`).
+- Minimum dependency versions raised: `httpx >= 0.27.2` (was `>= 0.25.0`) and
+  `sentence-transformers >= 2.5.0` (was `>= 2.3.0`).
 
 ### Fixed
 

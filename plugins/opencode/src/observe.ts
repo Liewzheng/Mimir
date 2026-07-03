@@ -3,11 +3,18 @@ import type { Part } from "@opencode-ai/sdk"
 
 import { observe as mimirObserve } from "./mimir.js"
 
+/**
+ * Cache of user message texts keyed by session ID.
+ *
+ * The plugin observes turn-end events and needs the original user text paired
+ * with the assistant response to store the exchange as a single memory.
+ */
 export type UserCache = Map<
   string,
   { messageID: string; text: string }
 >
 
+/** Concatenate all text parts in a message into a single trimmed string. */
 function extractText(parts: Part[]): string {
   return parts
     .filter(
@@ -19,6 +26,16 @@ function extractText(parts: Part[]): string {
     .trim()
 }
 
+/**
+ * Observe a completed assistant turn and store the user/assistant exchange
+ * as a memory in Mimir.
+ *
+ * @param client OpenCode plugin client used to fetch the assistant message.
+ * @param event The turn-end event from OpenCode.
+ * @param userCache Cache holding the user text for the current session.
+ * @param workspacePath Path to the current workspace, used for session isolation.
+ * @param options Plugin configuration forwarded to the Mimir CLI.
+ */
 export async function observe(
   client: PluginInput["client"],
   event: { type: string; properties: Record<string, unknown> },
@@ -33,6 +50,10 @@ export async function observe(
     assistantMessageID: string
   }
   const { sessionID, assistantMessageID } = properties
+  if (typeof sessionID !== "string" || typeof assistantMessageID !== "string") {
+    console.error("[Mimir] session.next.step.ended event missing expected properties")
+    return
+  }
 
   const cached = userCache.get(sessionID)
   if (!cached) return
@@ -50,7 +71,7 @@ export async function observe(
 
   if (!assistantText) return
 
-  mimirObserve(
+  await mimirObserve(
     [
       { role: "user", content: cached.text },
       { role: "assistant", content: assistantText },

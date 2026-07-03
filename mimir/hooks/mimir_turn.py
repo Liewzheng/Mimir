@@ -101,6 +101,9 @@ def _format_recall_results(
     query: str,
     top_k: int,
     score_threshold: float = _DEFAULT_RECALL_SCORE_THRESHOLD,
+    dedup_threshold: float = 0.9,
+    ranking_mode: str = "multiplicative",
+    max_candidates_for_clustering: int = 50,
 ) -> str:
     """Return a formatted recall block for injection into the agent context.
 
@@ -111,7 +114,13 @@ def _format_recall_results(
     Memory text is sanitized before injection to reduce the risk of recalled
     content being interpreted as new instructions (prompt injection).
     """
-    memories = adapter.recall(query, top_k=top_k)
+    memories = adapter.recall(
+        query,
+        top_k=top_k,
+        dedup_threshold=dedup_threshold,
+        ranking_mode=ranking_mode,
+        max_candidates_for_clustering=max_candidates_for_clustering,
+    )
     filtered = [m for m in memories if m.score > score_threshold]
     if not filtered:
         return ""
@@ -311,6 +320,9 @@ def handle_user_prompt_submit(
     top_k: int,
     recall_top_k: int,
     recall_score_threshold: float,
+    recall_dedup_threshold: float = 0.9,
+    recall_ranking_mode: str = "multiplicative",
+    recall_max_candidates: int = 50,
     format_json: bool = False,
 ) -> int:
     """Recall relevant memories before the assistant replies."""
@@ -339,6 +351,9 @@ def handle_user_prompt_submit(
         query,
         recall_top_k,
         score_threshold=recall_score_threshold,
+        dedup_threshold=recall_dedup_threshold,
+        ranking_mode=recall_ranking_mode,
+        max_candidates_for_clustering=recall_max_candidates,
     )
     trigger = _format_organize_trigger(adapter)
     if format_json:
@@ -611,6 +626,24 @@ def main(argv: list[str] | None = None) -> int:
         help="Minimum similarity score for a recalled memory to be injected (default: %(default)s)",
     )
     parser.add_argument(
+        "--recall-dedup-threshold",
+        type=float,
+        default=0.9,
+        help="Cosine similarity threshold for semantic clustering deduplication; 1.0 disables it (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--recall-ranking-mode",
+        choices=["multiplicative", "additive"],
+        default="multiplicative",
+        help="Recall reranking mode: multiplicative amplifies retrieval score with lifecycle metadata (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--recall-max-candidates",
+        type=int,
+        default=50,
+        help="Maximum number of top retrieval candidates to consider for semantic clustering (default: %(default)s)",
+    )
+    parser.add_argument(
         "--workspace-path",
         type=Path,
         default=None,
@@ -667,6 +700,9 @@ def main(argv: list[str] | None = None) -> int:
                 args.top_k,
                 args.recall_top_k,
                 args.recall_score_threshold,
+                args.recall_dedup_threshold,
+                args.recall_ranking_mode,
+                args.recall_max_candidates,
                 format_json=format_json,
             )
         if event == "Stop":

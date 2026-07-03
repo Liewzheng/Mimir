@@ -216,7 +216,9 @@ class TestAdapterHybridRecall:
         results = adapter.recall("Python fast sorting", top_k=5)
         assert len(results) == 1
         assert results[0].text == "Python fast sorting"
-        assert 0.0 <= results[0].score <= 1.0
+        # Multiplicative lifecycle boost can push the score above 1.0.
+        max_multiplier = 1.0 + 0.3
+        assert 0.0 <= results[0].score <= max_multiplier
 
     def test_recall_bm25_disabled_falls_back_to_vector(self) -> None:
         adapter = _make_adapter()

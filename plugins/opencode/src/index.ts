@@ -8,27 +8,38 @@ const MimirPlugin: Plugin = async (input, options = {}) => {
 
   return {
     "chat.message": async (hookInput, hookOutput) => {
-      const result = await recall(
-        hookInput,
-        hookOutput,
-        input.directory,
-        options,
-      )
-      if (result) {
-        userCache.set(hookInput.sessionID, {
-          messageID: hookInput.messageID ?? hookOutput.message.id,
-          text: result.query,
-        })
+      try {
+        const result = await recall(
+          hookInput,
+          hookOutput,
+          input.directory,
+          options,
+        )
+        // `result` is undefined only when the user message has no text.
+        // When present, cache the original query so the turn-end observer can
+        // pair it with the assistant response and store the exchange.
+        if (result) {
+          userCache.set(hookInput.sessionID, {
+            messageID: hookInput.messageID ?? hookOutput.message.id,
+            text: result.query,
+          })
+        }
+      } catch (error) {
+        console.error("[Mimir] recall failed:", error)
       }
     },
     event: async ({ event }) => {
-      await observe(
-        input.client,
-        event as { type: string; properties: Record<string, unknown> },
-        userCache,
-        input.directory,
-        options,
-      )
+      try {
+        await observe(
+          input.client,
+          event as { type: string; properties: Record<string, unknown> },
+          userCache,
+          input.directory,
+          options,
+        )
+      } catch (error) {
+        console.error("[Mimir] observe failed:", error)
+      }
     },
   }
 }

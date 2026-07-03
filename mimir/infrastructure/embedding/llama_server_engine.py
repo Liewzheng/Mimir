@@ -1,9 +1,17 @@
 """Direct llama.cpp server embedding engine."""
 
+from __future__ import annotations
+
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 import httpx
 import torch
+
+
+class InputTooLongError(RuntimeError):
+    """Raised when a single llama-server embedding request is too large."""
 
 
 class LlamaServerEmbeddingEngine:
@@ -27,10 +35,16 @@ class LlamaServerEmbeddingEngine:
         model_path: str | None = None,
         base_url: str = "http://127.0.0.1:11435",
         timeout: float = 120.0,
+        max_workers: int = 32,
+        max_input_tokens: int = 1024,
+        chars_per_token: int = 4,
     ) -> None:
         self.model_path = model_path
         self.base_url = base_url.rstrip("/")
         self._timeout = timeout
+        self._max_workers = max_workers
+        self._max_input_tokens = max_input_tokens
+        self._chars_per_token = chars_per_token
         self.output_dim = 0
 
     def _post(self, text: str) -> Any:
@@ -44,11 +58,52 @@ class LlamaServerEmbeddingEngine:
             )
         except httpx.HTTPError as exc:
             raise RuntimeError(f"llama-server request failed for {url}: {exc}") from exc
-        response.raise_for_status()
+        try:
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 500:
+                raise InputTooLongError(
+                    f"llama-server request too large for {url}: {exc}"
+                ) from exc
+            raise RuntimeError(f"llama-server request failed for {url}: {exc}") from exc
         try:
             return response.json()
         except ValueError as exc:
             raise RuntimeError(f"llama-server returned invalid JSON: {exc}") from exc
+
+    def _post_and_extract(
+        self,
+        text: str,
+        min_chunk_chars: int = 64,
+    ) -> list[float]:
+        """Send a single embedding request and normalize the response.
+
+        If the server rejects the request as too large, the text is recursively
+        split in half and the resulting chunk embeddings are averaged.
+        """
+        try:
+            data = self._post(text)
+        except InputTooLongError:
+            if len(text) <= min_chunk_chars:
+                raise
+            mid = len(text) // 2
+            left = self._post_and_extract(text[:mid], min_chunk_chars)
+            right = self._post_and_extract(text[mid:], min_chunk_chars)
+            return [(a + b) / 2.0 for a, b in zip(left, right, strict=True)]
+        return self._extract_embedding(data)
+
+    def _split_text(self, text: str) -> list[str]:
+        """Split a long text into chunks that fit within the server's batch limit.
+
+        llama-server's /embedding endpoint treats the input as a single batch of
+        tokens; if the text exceeds the server's physical batch size the request
+        fails.  We approximate tokens by characters and send shorter chunks, then
+        average the resulting chunk embeddings for the original text.
+        """
+        max_chunk_chars = self._max_input_tokens * self._chars_per_token
+        if len(text) <= max_chunk_chars:
+            return [text]
+        return [text[i : i + max_chunk_chars] for i in range(0, len(text), max_chunk_chars)]
 
     @staticmethod
     def _extract_embedding(data: Any) -> list[float]:
@@ -84,16 +139,43 @@ class LlamaServerEmbeddingEngine:
     ) -> torch.Tensor:
         """Return embeddings for the given texts.
 
-        llama-server /embedding endpoint processes one text per request.
-        We send requests sequentially here for simplicity.
+        llama-server /embedding endpoint processes one text per request.  We send
+        requests concurrently so that embedding a large session does not become
+        bottlenecked by network latency.  Long inputs are transparently chunked
+        and their chunk embeddings are mean-pooled to respect the server's batch
+        limits.
         """
-        embeddings: list[list[float]] = []
-        for text in texts:
-            data = self._post(text)
-            embedding = self._extract_embedding(data)
-            embeddings.append(embedding)
+        chunk_texts: list[str] = []
+        chunk_map: list[int] = []
+        for idx, text in enumerate(texts):
+            chunks = self._split_text(text)
+            chunk_texts.extend(chunks)
+            chunk_map.extend([idx] * len(chunks))
 
-        tensor = torch.tensor(embeddings, dtype=torch.float32)
+        chunk_embeddings: list[list[float] | None] = [None] * len(chunk_texts)
+        with ThreadPoolExecutor(max_workers=self._max_workers) as executor:
+            future_to_idx = {
+                executor.submit(self._post_and_extract, text): idx
+                for idx, text in enumerate(chunk_texts)
+            }
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                chunk_embeddings[idx] = future.result()
+
+        # Aggregate chunk embeddings for each original text by mean pooling.
+        grouped: defaultdict[int, list[torch.Tensor]] = defaultdict(list)
+        for idx, emb in zip(chunk_map, chunk_embeddings, strict=False):
+            grouped[idx].append(torch.tensor(emb, dtype=torch.float32))
+
+        embeddings: list[torch.Tensor] = []
+        for idx in range(len(texts)):
+            chunk_tensors = grouped[idx]
+            if not chunk_tensors:
+                raise RuntimeError(f"No embeddings produced for text {idx}")
+            mean = torch.stack(chunk_tensors).mean(dim=0)
+            embeddings.append(mean)
+
+        tensor = torch.stack(embeddings)
         if self.output_dim == 0:
             self.output_dim = tensor.shape[1]
         return tensor

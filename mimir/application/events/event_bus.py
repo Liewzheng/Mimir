@@ -28,7 +28,15 @@ class EventBus:
 
 
 class EncodeEvent:
-    """Emitted after an encode() call."""
+    """Emitted after an encode() call.
+
+    Attributes:
+        texts: Input texts that were encoded.
+        base: Raw encoder output before projection, shape (n, output_dim).
+        output: Projected prototype activation scores, shape (n, num_prototypes).
+        prototype_weights: Learned prototype matrix at the time of encoding.
+        step: Current learning step.
+    """
 
     def __init__(
         self,
@@ -46,7 +54,15 @@ class EncodeEvent:
 
 
 class LearnEvent:
-    """Emitted after a learn() call."""
+    """Emitted after a learn() call.
+
+    Attributes:
+        texts: Texts that were learned.
+        base: Prototype matrix snapshot before learning.
+        updated_ids: Indices of prototypes that were updated.
+        report: Learning report, including metrics such as capacity usage.
+        step: Current learning step after the update.
+    """
 
     def __init__(
         self,

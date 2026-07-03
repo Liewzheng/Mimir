@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process"
+import { spawn } from "node:child_process"
 
 export type MimirOptions = {
   python?: string
@@ -40,59 +40,97 @@ function buildArgs(options: MimirOptions, workspacePath: string): string[] {
   return args
 }
 
-function runMimir(args: string[], payload: Record<string, unknown>): unknown {
-  const result = spawnSync(args[0], args.slice(1), {
-    input: JSON.stringify(payload),
-    encoding: "utf-8",
-    timeout: 15000,
+function runMimir(args: string[], payload: Record<string, unknown>): Promise<unknown> {
+  return new Promise((resolve) => {
+    const child = spawn(args[0], args.slice(1), {
+      stdio: ["pipe", "pipe", "pipe"],
+    })
+    let stdout = ""
+    let stderr = ""
+    let timeoutId: ReturnType<typeof setTimeout> | undefined
+
+    let finished = false
+    const finish = (result: unknown) => {
+      if (finished) return
+      finished = true
+      if (timeoutId) clearTimeout(timeoutId)
+      resolve(result)
+    }
+
+    timeoutId = setTimeout(() => {
+      child.kill("SIGTERM")
+      finish(undefined)
+    }, 15000)
+
+    child.stdin.write(JSON.stringify(payload), "utf-8", (err) => {
+      if (err) {
+        console.error("[Mimir] failed to write payload:", err)
+        finish(undefined)
+        return
+      }
+      child.stdin.end()
+    })
+
+    child.stdout.on("data", (data) => {
+      stdout += data
+    })
+    child.stderr.on("data", (data) => {
+      stderr += data
+    })
+
+    child.on("error", (error) => {
+      console.error("[Mimir] failed to invoke:", error)
+      finish(undefined)
+    })
+
+    child.on("close", (code) => {
+      if (code !== 0) {
+        console.error("[Mimir] hook exited with code", code, stderr)
+        finish(undefined)
+        return
+      }
+      const out = stdout.trim()
+      if (!out) {
+        finish(undefined)
+        return
+      }
+      try {
+        finish(JSON.parse(out))
+      } catch (cause) {
+        console.error("[Mimir] failed to parse hook output:", out, cause)
+        finish(undefined)
+      }
+    })
   })
-
-  if (result.error) {
-    console.error("[Mimir] failed to invoke:", result.error)
-    return undefined
-  }
-  if (result.status !== 0) {
-    console.error("[Mimir] hook exited with code", result.status, result.stderr)
-    return undefined
-  }
-
-  const stdout = result.stdout.trim()
-  if (!stdout) return undefined
-  try {
-    return JSON.parse(stdout)
-  } catch (cause) {
-    console.error("[Mimir] failed to parse hook output:", stdout, cause)
-    return undefined
-  }
 }
 
-export function recall(
+export async function recall(
   query: string,
   workspacePath: string,
   options: MimirOptions = {},
-): string | undefined {
+): Promise<string | undefined> {
   const args = buildArgs(options, workspacePath)
   const payload = {
     hook_event_name: "UserPromptSubmit",
     prompt: query,
   }
-  const result = runMimir(args, payload)
+  const result = await runMimir(args, payload)
   if (!result || typeof result !== "object") return undefined
   const recallText = (result as { recall?: string | null }).recall
   return recallText && recallText.trim() ? recallText : undefined
 }
 
-export function observe(
+export async function observe(
   exchange: { role: "user" | "assistant"; content: string }[],
   workspacePath: string,
   options: MimirOptions = {},
-): void {
+): Promise<void> {
   const args = buildArgs(options, workspacePath)
   const payload = {
     hook_event_name: "Stop",
     messages: exchange,
   }
-  const result = runMimir(args, payload)
+  const result = await runMimir(args, payload)
   if (!result || typeof result !== "object" || (result as { status?: string }).status !== "ok") {
     console.error("[Mimir] observe did not return ok:", result)
   }

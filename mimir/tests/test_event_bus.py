@@ -1,6 +1,8 @@
 """Tests for the in-memory event bus."""
 
-from mimir.application.events.event_bus import EncodeEvent, EventBus, LearnEvent
+import torch
+
+from mimir.application.events import EncodeEvent, EventBus, LearnEvent
 
 
 def test_event_bus_publishes_to_subscribers() -> None:
@@ -24,8 +26,6 @@ def test_event_bus_unsubscribe() -> None:
 
 def test_encode_event_attributes() -> None:
     """EncodeEvent stores the expected attributes."""
-    import torch
-
     event = EncodeEvent(
         texts=["hello"],
         base=torch.randn(1, 8),
@@ -39,8 +39,6 @@ def test_encode_event_attributes() -> None:
 
 def test_learn_event_attributes() -> None:
     """LearnEvent stores the expected attributes."""
-    import torch
-
     report: dict[str, object] = {"updated": 1}
     event = LearnEvent(
         texts=["hello"],

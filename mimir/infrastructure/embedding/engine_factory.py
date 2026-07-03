@@ -7,6 +7,7 @@ from mimir.infrastructure.embedding.fake_engine import FakeEngine
 from mimir.infrastructure.embedding.llama_server_engine import (
     LlamaServerEmbeddingEngine,
 )
+from mimir.infrastructure.embedding.ollama_engine import OllamaEmbeddingEngine
 
 
 def create_engine(
@@ -15,12 +16,15 @@ def create_engine(
     model: str = "all-MiniLM-L6-v2",
     fake_dim: int = 16,
 ) -> EmbeddingEngine:
-    """Create an embedding engine by backend name.
+    """Create and return an embedding engine by backend name.
 
     Args:
-        backend: One of ``llama-server``, ``sentence-transformer``, or ``fake``.
-        base_url: URL for the llama-server backend.
-        model: Model name for the sentence-transformer backend.
+        backend: One of ``llama-server``, ``sentence-transformer``, ``ollama``,
+            or ``fake``.
+        base_url: URL for the llama-server backend. For ``ollama`` this is the
+            Ollama host URL (default ``http://localhost:11434`` is used if not
+            provided via argument or ``OLLAMA_HOST`` environment variable).
+        model: Model name for the sentence-transformer or ollama backend.
         fake_dim: Dimension for the fake backend (for testing only).
 
     Returns:
@@ -44,9 +48,11 @@ def create_engine(
                 'Install it with: pip install "mimir[server]"'
             ) from exc
         return SentenceTransformerEngine(model)
+    if backend == "ollama":
+        return OllamaEmbeddingEngine(model=model, base_url=base_url)
     if backend == "fake":
         return FakeEngine(dim=fake_dim)
     raise ValueError(
         f"Unknown backend: {backend!r}. "
-        "Supported backends: llama-server, sentence-transformer, fake"
+        "Supported backends: llama-server, sentence-transformer, ollama, fake"
     )

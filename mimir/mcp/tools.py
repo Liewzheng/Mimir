@@ -149,19 +149,19 @@ def summarize_memories(*, ctx: Context[Any, ServerContext, Any]) -> str:
     """
     result = _session(ctx).list_memories()
     lines: list[str] = [
-        "请整理以下 Mimir 工作记忆：",
+        "Please organize the following Mimir working memories:",
         "",
-        "- 合并重复或高度相似的内容",
-        "- 删除临时性、无长期价值的内容",
-        "- 把用户偏好、规则、决策、重要事实保留为简洁陈述句",
-        "- 输出结果请调用 mimir_replace_memories(memories=[...])",
+        "- Merge duplicate or highly similar content",
+        "- Remove temporary or low-long-term-value content",
+        "- Keep user preferences, rules, decisions, and important facts as concise declarative sentences",
+        "- Call mimir_replace_memories(memories=[...]) to write the cleaned list back",
         "",
-        f"当前共有 {result['memory_count']} 条记忆：",
+        f"There are currently {result['memory_count']} memories:",
     ]
     for item in result["memories"]:
         lines.append(f"{item['index']}. {item['text']}")
     if not result["memories"]:
-        lines.append("（暂无记忆）")
+        lines.append("(No memories yet)")
     return "\n".join(lines)
 
 
