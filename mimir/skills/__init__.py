@@ -1,5 +1,6 @@
 """Mimir skill distillation package."""
 
+from mimir.skills.expander import SkillExpander
 from mimir.skills.extractor import Skeleton, extract_skeleton
 from mimir.skills.injector import InjectorConfig, SkillInjector
 from mimir.skills.revisor import SkillRevisor
@@ -12,6 +13,7 @@ __all__ = [
     "InjectorConfig",
     "SafeCommandClassifier",
     "Skill",
+    "SkillExpander",
     "SkillInjector",
     "SkillRevisor",
     "SkillStore",

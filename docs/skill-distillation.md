@@ -5,8 +5,8 @@
 
 ## Status
 
-Prototype implemented. Phase 1 (observation + extraction) is functional; Phase 2
-(validation / revision) and Phase 3 (interception) are future work.
+Prototype implemented. Phase 1 (observation), Phase 2 (validation / revision),
+and Phase 3 (PreToolUse interception / expansion) are all functional.
 
 ## Context
 
@@ -296,10 +296,12 @@ when the user explicitly rejects it.
 - Automatic revision heuristics.
 - Confidence decay and deprecation.
 
-### Phase 3: Interception
+### Phase 3: Interception (implemented)
 
-- `PreToolUse` pre-check and optional shortcut execution.
-- Requires deeper integration with the agent CLI protocol.
+- `mimir/hooks/skill_interceptor.py`: `PreToolUse` hook for shortcut expansion.
+- `mimir/skills/expander.py`: alias and workflow variable expansion.
+- Safety gating: destructive expansions require approval; safe expansions run automatically.
+- Agent setup helpers register the `PreToolUse` hook for Kimi Code, Claude Code, and Codex.
 
 ## Configuration
 

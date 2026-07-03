@@ -23,6 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Simple revision strategy that re-extracts a skill template from recent
     cluster data and deprecates the old version.
   - `mimir/skills/validator.py` and `mimir/skills/revisor.py`.
+- Skill interception and expansion (Phase 3):
+  - `mimir/hooks/skill_interceptor.py` for `PreToolUse` events.
+  - `mimir/skills/expander.py` expands aliases and fills workflow `{var}` slots.
+  - Safe commands are expanded automatically; dangerous expansions require
+    approval via `requires_approval: true` in the hook response.
+  - Agent setup helpers now register both `PreToolUse` and `PostToolUse` hooks.
 
 ### Changed
 

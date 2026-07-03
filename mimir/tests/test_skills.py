@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from mimir.skills.expander import SkillExpander
 from mimir.skills.extractor import extract_skeleton
 from mimir.skills.injector import InjectorConfig, SkillInjector
 from mimir.skills.revisor import SkillRevisor
@@ -305,3 +306,93 @@ class TestSkillRevisor:
         cluster = PatternCluster(key="Shell:git status")
         revisor = SkillRevisor()
         assert revisor.revise(skill, cluster) is None
+
+
+class TestSkillExpander:
+    def test_expands_alias(self) -> None:
+        skill = Skill(
+            id="s1",
+            type="alias",
+            name="gs",
+            trigger_pattern="gs",
+            expansion="git status -sb",
+            confidence=0.9,
+        )
+        expander = SkillExpander([skill])
+        result = expander.expand("Shell", {"command": "gs"})
+        assert result == {"command": "git status -sb"}
+
+    def test_expands_workflow_with_variable(self) -> None:
+        skill = Skill(
+            id="s1",
+            type="workflow",
+            name="adb reboot",
+            trigger_pattern="adb -s {var} shell reboot",
+            template="adb -s {var} shell reboot",
+            confidence=0.9,
+        )
+        expander = SkillExpander([skill])
+        result = expander.expand("Shell", {"command": "adb -s DEV1 shell reboot"})
+        assert result == {"command": "adb -s DEV1 shell reboot"}
+
+    def test_no_expansion_for_low_confidence_skill(self) -> None:
+        skill = Skill(
+            id="s1",
+            type="alias",
+            name="gs",
+            trigger_pattern="gs",
+            expansion="git status -sb",
+            confidence=0.5,
+        )
+        expander = SkillExpander([skill], min_confidence=0.85)
+        assert expander.expand("Shell", {"command": "gs"}) is None
+
+    def test_no_expansion_for_deprecated_skill(self) -> None:
+        skill = Skill(
+            id="s1",
+            type="alias",
+            name="gs",
+            trigger_pattern="gs",
+            expansion="git status -sb",
+            confidence=0.9,
+            deprecated=True,
+        )
+        expander = SkillExpander([skill])
+        assert expander.expand("Shell", {"command": "gs"}) is None
+
+    def test_no_expansion_for_non_shell_tool(self) -> None:
+        skill = Skill(
+            id="s1",
+            type="alias",
+            name="gs",
+            trigger_pattern="gs",
+            expansion="git status -sb",
+            confidence=0.9,
+        )
+        expander = SkillExpander([skill])
+        assert expander.expand("Edit", {"command": "gs"}) is None
+
+    def test_expands_unsafe_alias(self) -> None:
+        skill = Skill(
+            id="s1",
+            type="alias",
+            name="cleanup",
+            trigger_pattern="cleanup",
+            expansion="rm -rf /tmp/old",
+            confidence=0.9,
+        )
+        expander = SkillExpander([skill])
+        result = expander.expand("Shell", {"command": "cleanup"})
+        assert result == {"command": "rm -rf /tmp/old"}
+
+    def test_no_expansion_when_command_does_not_match(self) -> None:
+        skill = Skill(
+            id="s1",
+            type="workflow",
+            name="adb reboot",
+            trigger_pattern="adb -s {var} shell reboot",
+            template="adb -s {var} shell reboot",
+            confidence=0.9,
+        )
+        expander = SkillExpander([skill])
+        assert expander.expand("Shell", {"command": "ls -la"}) is None
