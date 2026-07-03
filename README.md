@@ -335,7 +335,7 @@ python -m mimir.eval --backend llama-server --top-k 4
 
 ## Status & Roadmap
 
-Mimir is currently **v0.2.0**.
+Mimir is currently **v0.3.0**.
 
 - [x] MVP: encode / learn / save / load
 - [x] Top-k sparse prototype activation
