@@ -445,6 +445,48 @@ See [`docs/roadmap.md`](docs/roadmap.md) for the full roadmap.
 
 ---
 
+## Development
+
+Mimir uses GitHub Actions to run checks on every push and PR. The CI matrix tests
+Python 3.10, 3.11, and 3.12, plus the OpenCode TypeScript plugin.
+
+Set up a local development environment:
+
+```bash
+pip install -e ".[dev,server,api]"
+```
+
+The extras are:
+
+- `dev` — pytest, ruff, mypy
+- `server` — sentence-transformers embedding backend
+- `api` — OpenAI-compatible client dependencies
+
+Run the same checks as CI:
+
+```bash
+ruff check mimir
+mypy mimir
+python -m pytest --tb=short
+```
+
+For the OpenCode plugin:
+
+```bash
+cd plugins/opencode
+npm ci
+npm run typecheck
+```
+
+### Secret scanning
+
+Some test fixtures and evaluation data contain intentionally fake secrets or
+public benchmark dialogue. These files are listed in `.gitleaksignore` so
+Gitleaks does not flag them. Do **not** add real credentials to those files or
+to the ignore list.
+
+---
+
 ## Embedding Backend Performance
 
 Mimir supports multiple embedding backends. Choose based on your hardware and latency requirements.

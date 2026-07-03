@@ -6,9 +6,13 @@ on:
   pull_request:
     branches: [main, master]
 
+env:
+  NODE_VERSION: "20"
+
 jobs:
   python:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -21,6 +25,7 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python-version }}
+          cache: pip
 
       - name: Install dependencies
         run: |
@@ -38,6 +43,7 @@ jobs:
 
   typescript:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
@@ -45,7 +51,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: ${{ env.NODE_VERSION }}
           cache: npm
           cache-dependency-path: plugins/opencode/package-lock.json
 
