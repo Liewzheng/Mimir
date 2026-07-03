@@ -470,7 +470,7 @@ mypy mimir
 python -m pytest --tb=short
 ```
 
-For the OpenCode plugin:
+For the OpenCode plugin you need **Node.js 20+**:
 
 ```bash
 cd plugins/opencode
@@ -484,6 +484,15 @@ Some test fixtures and evaluation data contain intentionally fake secrets or
 public benchmark dialogue. These files are listed in `.gitleaksignore` so
 Gitleaks does not flag them. Do **not** add real credentials to those files or
 to the ignore list.
+
+Run Gitleaks locally before committing:
+
+```bash
+gitleaks detect --source . --verbose
+```
+
+If it reports a false positive in test/eval data, add the file to
+`.gitleaksignore` only after confirming it contains no real credentials.
 
 ---
 

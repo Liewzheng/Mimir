@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- GitHub Actions CI now caches pip dependencies and enforces `timeout-minutes` on
+  all jobs.
+- Gitleaks secret-scanning job added to CI.
+- README now includes a Development section with local setup, check commands,
+  extras explanations, and secret-scanning notes.
+
+### Changed
+
+- CI Node.js version is now defined by a workflow-level `NODE_VERSION`
+  environment variable.
+
 ## [0.3.0] - 2026-07-03
 
 ### Added
