@@ -3,10 +3,15 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
+
+from mimir.infrastructure.persistence.atomic_write import atomic_write
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -43,47 +48,48 @@ class SkillStore:
         self.path = path
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
-    def _load_lines(self) -> list[dict[str, Any]]:
+    def _load_records(self) -> list[dict[str, Any]]:
         if not self.path.exists():
             return []
         records: list[dict[str, Any]] = []
         with self.path.open("r", encoding="utf-8") as handle:
-            for line in handle:
+            for line_no, line in enumerate(handle, start=1):
                 line = line.strip()
                 if not line:
                     continue
                 try:
                     records.append(json.loads(line))
                 except json.JSONDecodeError:
-                    continue
+                    logger.warning("Skipping corrupted skill record at line %d", line_no)
         return records
+
+    def _load_skills(self) -> list[Skill]:
+        return [Skill.from_dict(record) for record in self._load_records()]
 
     def load(self) -> list[Skill]:
         """Return all non-deprecated skills."""
-        return [
-            Skill.from_dict(record)
-            for record in self._load_lines()
-            if not record.get("deprecated", False)
-        ]
+        return [s for s in self._load_skills() if not s.deprecated]
 
     def load_all(self) -> list[Skill]:
         """Return all skills including deprecated ones."""
-        return [Skill.from_dict(record) for record in self._load_lines()]
+        return self._load_skills()
 
     def add(self, skill: Skill) -> None:
-        """Append a skill to the store."""
-        with self.path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(skill.to_dict(), ensure_ascii=False) + "\n")
+        """Append a skill to the store, replacing an existing skill with the same ID."""
+        skills = self._load_skills()
+        skills = [s for s in skills if s.id != skill.id]
+        skills.append(skill)
+        self.replace(skills)
 
     def replace(self, skills: list[Skill]) -> None:
-        """Overwrite the store with the given skills."""
-        self.path.write_text(
-            "\n".join(json.dumps(s.to_dict(), ensure_ascii=False) for s in skills) + "\n",
-            encoding="utf-8",
-        )
+        """Overwrite the store with the given skills atomically."""
+        text = "\n".join(json.dumps(s.to_dict(), ensure_ascii=False) for s in skills)
+        if text:
+            text += "\n"
+        atomic_write(self.path, text)
 
     def get_by_id(self, skill_id: str) -> Skill | None:
-        for skill in self.load_all():
+        for skill in self._load_skills():
             if skill.id == skill_id:
                 return skill
         return None

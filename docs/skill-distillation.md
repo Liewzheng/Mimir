@@ -190,7 +190,7 @@ class Skill:
     id: str
     type: Literal["alias", "workflow"]
     name: str
-    trigger_pattern: str | Embedding  # for alias: literal; for workflow: embedding
+    trigger_pattern: str  # literal template for both alias and workflow
     expansion: str | None  # alias only
     template: str | None  # workflow only: prompt or tool-call chain
     required_context: list[str]
@@ -199,8 +199,8 @@ class Skill:
     failure_count: int
     version: int
     deprecated: bool
-    created_at: datetime
-    last_used: datetime
+    created_at: str  # ISO 8601
+    last_used: str  # ISO 8601
 ```
 
 Persistence:
@@ -275,7 +275,8 @@ when the user explicitly rejects it.
 | Context pollution | Inject only top-N skills; allow explicit recall for others. |
 | Confusing skill with user preference | Separate user-defined aliases from auto-extracted workflows. |
 | Agent CLI hook limitations | Start with PostToolUse observation; intercept only after validation. |
-| Sensitive data in commands | Reuse existing Mimir redactor before storing command strings. |
+| Sensitive data in commands | Reuse existing Mimir redactor before storing command strings. Implemented in `skill_observer`. |
+| Prompt injection via skill output | Escape backticks in injected skill names/expansions. Implemented in `SkillInjector`. |
 
 ## Implementation Phases
 
@@ -301,24 +302,25 @@ when the user explicitly rejects it.
 
 ## Configuration
 
+The skill subsystem has its own configuration classes. These fields are **not**
+part of `MimirConfig`; they live in `SkillTrackerConfig` and `InjectorConfig`.
+
 ```python
 @dataclass
-class MimirConfig:
-    # ... existing fields ...
+class SkillTrackerConfig:
+    window_size: int = 50
+    min_repetitions: int = 5
+    frustration_threshold: float = 50.0
+    min_fixed_ratio: float = 0.6
 
-    # Skill extraction
-    skill_extraction_enabled: bool = False
-    skill_frustration_threshold: float = 50.0
-    skill_window_size: int = 50
-    skill_min_confidence: float = 0.85
-    skill_max_active: int = 10
-    skill_min_repetitions: int = 5
-
-    # Skill validation
-    skill_validation_enabled: bool = True
-    skill_validation_sample_rate: float = 0.1
-    skill_auto_revise: bool = True
+@dataclass
+class InjectorConfig:
+    max_active: int = 10
+    min_confidence: float = 0.85
 ```
+
+Future phases may wire these into `MimirConfig` once the lifecycle and
+validation mechanisms are stable.
 
 ## Open Questions
 

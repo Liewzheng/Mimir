@@ -15,11 +15,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from mimir.infrastructure.redaction import Redactor
 from mimir.mcp.session import _detect_workspace_path, _workspace_hash
 from mimir.skills.extractor import Skeleton
 from mimir.skills.injector import InjectorConfig, SkillInjector
 from mimir.skills.store import Skill, SkillStore
-from mimir.skills.tracker import CommandEvent, SkillTracker, SkillTrackerConfig
+from mimir.skills.tracker import CommandEvent, SkillTracker
 
 logger = logging.getLogger(__name__)
 
@@ -46,20 +47,22 @@ def _workspace_dir(base_dir: Path, workspace_path: Path) -> Path:
 
 def _load_tracker(workspace_dir: Path) -> SkillTracker:
     """Load or create a tracker for the workspace."""
-    tracker_path = workspace_dir / "skill_tracker.json"
+    tracker_path = workspace_dir / "skill_tracker_state.json"
     if tracker_path.exists():
         try:
             data = json.loads(tracker_path.read_text(encoding="utf-8"))
-            return SkillTracker(SkillTrackerConfig(**data.get("config", {})))
+            tracker = SkillTracker()
+            tracker.restore(data)
+            return tracker
         except Exception:  # noqa: BLE001
-            logger.exception("Failed to load skill tracker; starting fresh")
+            logger.exception("Failed to load skill tracker state; starting fresh")
     return SkillTracker()
 
 
 def _save_tracker(tracker: SkillTracker, workspace_dir: Path) -> None:
-    """Persist the tracker snapshot."""
-    tracker_path = workspace_dir / "skill_tracker.json"
-    tracker_path.write_text(json.dumps(tracker.snapshot(), indent=2), encoding="utf-8")
+    """Persist the full tracker state across hook invocations."""
+    tracker_path = workspace_dir / "skill_tracker_state.json"
+    tracker_path.write_text(json.dumps(tracker.state(), indent=2), encoding="utf-8")
 
 
 def _extract_skill(cluster_key: str, cluster: Any) -> Skill | None:
@@ -68,7 +71,7 @@ def _extract_skill(cluster_key: str, cluster: Any) -> Skill | None:
     if skeleton is None or not skeleton.template:
         return None
     # Use the cluster key as a base name; clean it for human readability.
-    name = cluster_key.replace("Shell:", "").replace("Tool:", "")
+    name = cluster_key.replace("Shell:", "").replace("Tool:", "").replace("<empty>", "empty")
     skill_type = "alias" if skeleton.variable_count == 0 else "workflow"
     skill_id = f"{name}_{datetime.now(timezone.utc).strftime('%Y%m%d%H%M%S')}"
     return Skill(
@@ -93,9 +96,10 @@ def handle_post_tool_use(
     tracker = tracker or _load_tracker(ws_dir)
     store = SkillStore(ws_dir / "skills.jsonl")
 
+    redactor = Redactor()
     tool_name = payload.get("tool_name", "")
     tool_input = payload.get("tool_input") or {}
-    command = _extract_command(tool_name, tool_input)
+    command = redactor.redact(_extract_command(tool_name, tool_input))
 
     event = CommandEvent(tool_name=tool_name, command=command, context=payload)
     tracker.observe(event)

@@ -25,12 +25,20 @@ class SkillInjector:
     def select(self, skills: list[Skill]) -> list[Skill]:
         """Return the top-N active skills sorted by confidence and usage."""
         active = [s for s in skills if not s.deprecated and s.confidence >= self.config.min_confidence]
-        scored = sorted(
-            active,
-            key=lambda s: (s.confidence * (1 + s.usage_count), datetime.fromisoformat(s.last_used).timestamp()),
-            reverse=True,
-        )
+
+        def _score(skill: Skill) -> tuple[float, float]:
+            try:
+                ts = datetime.fromisoformat(skill.last_used).timestamp()
+            except ValueError:
+                ts = 0.0
+            return (skill.confidence * (1 + skill.usage_count), ts)
+
+        scored = sorted(active, key=_score, reverse=True)
         return scored[: self.config.max_active]
+
+    def _sanitize(self, text: str) -> str:
+        """Escape backticks to prevent markdown injection in context."""
+        return text.replace("`", "'")
 
     def format(self, skills: list[Skill]) -> str:
         """Format selected skills as a markdown block for context injection."""
@@ -39,9 +47,9 @@ class SkillInjector:
         lines = ["## Your active shortcuts", ""]
         for skill in skills:
             if skill.type == "alias" and skill.expansion:
-                lines.append(f"- `{skill.name}` = `{skill.expansion}`")
+                lines.append(f"- `{self._sanitize(skill.name)}` = `{self._sanitize(skill.expansion)}`")
             elif skill.template:
-                lines.append(f"- `{skill.name}` = `{skill.template}`")
+                lines.append(f"- `{self._sanitize(skill.name)}` = `{self._sanitize(skill.template)}`")
         lines.append("")
         return "\n".join(lines)
 
