@@ -81,6 +81,25 @@ class SkillStore:
         skills.append(skill)
         self.replace(skills)
 
+    def update(self, skill: Skill) -> None:
+        """Replace an existing skill by ID, keeping its created_at timestamp."""
+        skills = self._load_skills()
+        existing = next((s for s in skills if s.id == skill.id), None)
+        if existing is None:
+            raise ValueError(f"Skill {skill.id!r} not found in store")
+        skill.created_at = existing.created_at
+        skills = [s for s in skills if s.id != skill.id]
+        skills.append(skill)
+        self.replace(skills)
+
+    def deprecate(self, skill_id: str) -> None:
+        """Mark the skill with the given ID as deprecated."""
+        skill = self.get_by_id(skill_id)
+        if skill is None:
+            return
+        skill.deprecated = True
+        self.update(skill)
+
     def replace(self, skills: list[Skill]) -> None:
         """Overwrite the store with the given skills atomically."""
         text = "\n".join(json.dumps(s.to_dict(), ensure_ascii=False) for s in skills)

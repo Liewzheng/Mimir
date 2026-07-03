@@ -2,8 +2,10 @@ from pathlib import Path
 
 from mimir.skills.extractor import extract_skeleton
 from mimir.skills.injector import InjectorConfig, SkillInjector
+from mimir.skills.revisor import SkillRevisor
 from mimir.skills.store import Skill, SkillStore
-from mimir.skills.tracker import CommandEvent, SkillTracker, SkillTrackerConfig
+from mimir.skills.tracker import CommandEvent, PatternCluster, SkillTracker, SkillTrackerConfig
+from mimir.skills.validator import SafeCommandClassifier, SkillValidator, _match_template
 
 
 class TestExtractSkeleton:
@@ -92,7 +94,7 @@ class TestSkillTracker:
     def test_state_roundtrip(self) -> None:
         tracker = SkillTracker(SkillTrackerConfig(window_size=5))
         for i in range(3):
-            tracker.observe(CommandEvent("Shell", f"adb -s DEV{i} shell reboot"))
+            tracker.observe(CommandEvent("Shell", f"adb -s ABC{i} shell reboot"))
 
         state = tracker.state()
         restored = SkillTracker()
@@ -104,7 +106,7 @@ class TestSkillTracker:
         config = SkillTrackerConfig(window_size=5)
         tracker = SkillTracker(config)
         for i in range(10):
-            tracker.observe(CommandEvent("Shell", f"adb -s DEV{i} shell reboot"))
+            tracker.observe(CommandEvent("Shell", f"adb -s ABC{i} shell reboot"))
         # Only the last 5 events should remain in the cluster.
         cluster = tracker._clusters.get("Shell:adb")
         assert cluster is not None
@@ -174,3 +176,132 @@ class TestSkillInjector:
         ]
         injector = SkillInjector(InjectorConfig(max_active=10, min_confidence=0.85))
         assert injector.select(skills) == []
+
+
+class TestSkillValidator:
+    def test_safe_commands_are_whitelisted(self) -> None:
+        classifier = SafeCommandClassifier()
+        assert classifier.is_safe("Shell", "git status -sb")
+        assert classifier.is_safe("Shell", "cat README.md")
+        assert not classifier.is_safe("Shell", "rm -rf /")
+        assert not classifier.is_safe("Shell", "git push origin main")
+
+    def test_match_template_with_variable_slots(self) -> None:
+        assert _match_template("adb -s {var} shell reboot", "adb -s ABC123 shell reboot")
+        assert not _match_template("adb -s {var} shell reboot", "adb -s ABC123 shell boot")
+
+    def test_validation_increases_confidence_and_usage(self, tmp_path: Path) -> None:
+        store = SkillStore(tmp_path / "skills.jsonl")
+        skill = Skill(
+            id="s1",
+            type="workflow",
+            name="cat",
+            trigger_pattern="cat {var}",
+            template="cat {var}",
+            confidence=0.7,
+        )
+        store.add(skill)
+
+        validator = SkillValidator(store)
+        validator.validate("Shell", "cat README.md", success=True)
+
+        updated = store.get_by_id("s1")
+        assert updated is not None
+        assert updated.confidence > 0.7
+        assert updated.usage_count == 1
+
+    def test_validation_deprecates_after_failures(self, tmp_path: Path) -> None:
+        store = SkillStore(tmp_path / "skills.jsonl")
+        skill = Skill(
+            id="s1",
+            type="alias",
+            name="gs",
+            trigger_pattern="git status -sb",
+            expansion="git status -sb",
+            confidence=0.9,
+        )
+        store.add(skill)
+
+        validator = SkillValidator(store, max_failures=3)
+        for _ in range(3):
+            validator.validate("Shell", "git status -sb", success=False)
+
+        updated = store.get_by_id("s1")
+        assert updated is not None
+        assert updated.deprecated
+
+    def test_unsafe_commands_are_not_validated(self, tmp_path: Path) -> None:
+        store = SkillStore(tmp_path / "skills.jsonl")
+        skill = Skill(
+            id="s1",
+            type="alias",
+            name="rm",
+            trigger_pattern="rm -rf {var}",
+            expansion="rm -rf {var}",
+            confidence=0.9,
+        )
+        store.add(skill)
+
+        validator = SkillValidator(store)
+        validator.validate("Shell", "rm -rf /tmp/foo", success=True)
+
+        updated = store.get_by_id("s1")
+        assert updated is not None
+        assert updated.usage_count == 0
+
+
+class TestSkillRevisor:
+    def test_revises_when_skeleton_changes(self) -> None:
+        skill = Skill(
+            id="s1",
+            type="workflow",
+            name="adb",
+            trigger_pattern="adb -s {var} shell reboot",
+            template="adb -s {var} shell reboot",
+            confidence=0.8,
+            version=1,
+        )
+        tracker = SkillTracker()
+        for i in range(5):
+            tracker.observe(CommandEvent("Shell", f"adb logcat ABC{i} -d"))
+
+        cluster = tracker._clusters["Shell:adb logcat"]
+        revisor = SkillRevisor()
+        revised = revisor.revise(skill, cluster)
+
+        assert revised is not None
+        assert revised.version == 2
+        assert revised.id == "s1_v2"
+        assert revised.template != skill.template
+
+    def test_no_revision_when_skeleton_unchanged(self) -> None:
+        skill = Skill(
+            id="s1",
+            type="workflow",
+            name="adb",
+            trigger_pattern="adb -s {var} shell reboot",
+            template="adb -s {var} shell reboot",
+            confidence=0.8,
+            version=1,
+        )
+        tracker = SkillTracker()
+        for i in range(5):
+            tracker.observe(CommandEvent("Shell", f"adb -s ABC{i} shell reboot"))
+
+        cluster = tracker._clusters["Shell:adb"]
+        revisor = SkillRevisor()
+        revised = revisor.revise(skill, cluster)
+
+        assert revised is None
+
+    def test_no_revision_for_small_cluster(self) -> None:
+        skill = Skill(
+            id="s1",
+            type="alias",
+            name="gs",
+            trigger_pattern="git status -sb",
+            expansion="git status -sb",
+        )
+        cluster = PatternCluster(key="Shell:git status")
+        revisor = SkillRevisor()
+        assert revisor.revise(skill, cluster) is None
