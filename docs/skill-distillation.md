@@ -5,7 +5,8 @@
 
 ## Status
 
-Draft for prototype implementation.
+Prototype implemented. Phase 1 (observation + extraction) is functional; Phase 2
+(validation / revision) and Phase 3 (interception) are future work.
 
 ## Context
 

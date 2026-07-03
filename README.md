@@ -524,8 +524,9 @@ How it works:
    on subsequent turns.
 
 This is a Phase 1 prototype: it observes and suggests, but does not intercept or
-block tool calls. See [`docs/skill-distillation.md`](docs/skill-distillation.md)
-for the full design.
+block tool calls. Commands are redacted before being stored, and injected skill
+output is sanitized to reduce prompt-injection risks. See
+[`docs/skill-distillation.md`](docs/skill-distillation.md) for the full design.
 
 ---
 
