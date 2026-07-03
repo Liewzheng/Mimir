@@ -1,0 +1,9 @@
+# Gitleaks configuration for Mimir.
+# These files intentionally contain fake secrets for testing redaction or
+# public benchmark dialogue; they do not contain real credentials.
+[allowlist]
+paths = [
+    '''mimir/tests/test_redaction.py''',
+    '''mimir/tests/test_skill_observer.py''',
+    '''eval_data/longmemeval/longmemeval_s_cleaned.json''',
+]
