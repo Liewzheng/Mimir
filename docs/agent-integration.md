@@ -202,3 +202,40 @@ is added to the store.
 This is intentionally simple in Phase 2: the revision is just a re-extraction
 from recent data. More sophisticated over/under-generalization diagnosis is
 planned for Phase 3.
+
+
+## Skill Interception / Expansion (P3)
+
+Mimir can also intercept tool calls before they execute via the `PreToolUse`
+hook. When the incoming shell command matches a high-confidence skill, the hook
+returns an expanded command for the agent to run instead.
+
+```toml
+# ~/.kimi-code/config.toml
+[[hooks]]
+event = "PreToolUse"
+command = "python3 -m mimir.hooks.skill_interceptor"
+timeout = 5
+```
+
+The hook response has the shape:
+
+```json
+{
+  "tool_input": {"command": "git status -sb"},
+  "intercepted": true,
+  "requires_approval": false,
+  "reason": ""
+}
+```
+
+- **Alias**: `gs` matches the stored skill and expands to `git status -sb`.
+- **Workflow**: `adb -s DEV1 shell reboot` matches the template
+  `adb -s {var} shell reboot` and keeps the variable value.
+- **Safety**: expansions that result in destructive commands (e.g., `rm`,
+  `git push`, `adb reboot`) are not applied automatically. Instead, the hook
+  sets `intercepted: false` and `requires_approval: true`, leaving the original
+  command unchanged so the agent CLI can prompt the user.
+
+Only skills with `confidence >= 0.85` that are not deprecated are eligible for
+expansion. This matches the threshold used by the context injector.
