@@ -447,8 +447,9 @@ See [`docs/roadmap.md`](docs/roadmap.md) for the full roadmap.
 
 ## Development
 
-Mimir uses GitHub Actions to run checks on every push and PR. The CI matrix tests
-Python 3.10, 3.11, and 3.12, plus the OpenCode TypeScript plugin.
+Mimir uses [GitHub Actions](.github/workflows/ci.yml) to run checks on every
+push and PR. The CI matrix tests Python 3.10, 3.11, and 3.12, plus the OpenCode
+TypeScript plugin.
 
 Set up a local development environment:
 
@@ -492,7 +493,8 @@ gitleaks detect --source . --verbose
 ```
 
 If it reports a false positive in test/eval data, add the file to
-`.gitleaksignore` only after confirming it contains no real credentials.
+`.gitleaksignore` only after confirming it contains no real credentials, and
+keep the ignore list in sync with CI.
 
 ---
 
