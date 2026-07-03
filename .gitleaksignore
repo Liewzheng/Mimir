@@ -4,4 +4,5 @@
 # Before adding a new entry, confirm the file contains no real credentials.
 # When in doubt, redact or rotate the secret rather than adding it here.
 mimir/tests/test_redaction.py
+mimir/tests/test_skill_observer.py
 eval_data/longmemeval/longmemeval_s_cleaned.json
