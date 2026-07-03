@@ -73,7 +73,7 @@ class LifecycleScorer:
         """Exponential decay from 1.0 at creation to 0.0 as age → ∞."""
         age = self.now - created_at
         age_days = age.total_seconds() / 86_400.0
-        return math.exp2(-age_days / self.half_life_days)
+        return 2 ** (-age_days / self.half_life_days)
 
     def _access_score(self, access_count: int) -> float:
         """Log-scaled access score: 0 accesses → 0, grows sub-linearly."""

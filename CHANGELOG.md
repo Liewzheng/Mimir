@@ -22,6 +22,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CI Node.js version is now defined by a workflow-level `NODE_VERSION`
   environment variable.
 
+### Fixed
+
+- Replaced `math.exp2` with `2 ** x` in lifecycle scorer to restore Python 3.10
+  compatibility (`math.exp2` was added in Python 3.11).
+
 ## [0.3.0] - 2026-07-03
 
 ### Added
