@@ -14,10 +14,13 @@
     "build": "tsc"
   },
   "peerDependencies": {
-    "@opencode-ai/plugin": ">=1.0.0"
+    "@opencode-ai/plugin": ">=1.0.0",
+    "@opencode-ai/sdk": ">=1.0.0"
   },
   "devDependencies": {
     "@opencode-ai/plugin": "*",
+    "@opencode-ai/sdk": "*",
+    "@types/node": "^20.0.0",
     "typescript": "^5.0.0"
   },
   "engines": {

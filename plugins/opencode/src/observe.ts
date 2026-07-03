@@ -1,4 +1,5 @@
 import type { PluginInput } from "@opencode-ai/plugin"
+import type { Part } from "@opencode-ai/sdk"
 
 import { observe as mimirObserve } from "./mimir.js"
 
@@ -7,16 +8,11 @@ export type UserCache = Map<
   { messageID: string; text: string }
 >
 
-function extractText(parts: unknown[]): string {
+function extractText(parts: Part[]): string {
   return parts
     .filter(
-      (p): p is { type: string; text: string } =>
-        typeof p === "object" &&
-        p !== null &&
-        "type" in p &&
-        (p as { type: string }).type === "text" &&
-        "text" in p &&
-        typeof (p as { text: string }).text === "string",
+      (p): p is Part & { type: "text"; text: string } =>
+        p.type === "text" && "text" in p && typeof p.text === "string",
     )
     .map((p) => p.text)
     .join("\n")
@@ -43,12 +39,10 @@ export async function observe(
 
   let assistantText = ""
   try {
-    const response = await client.message({
-      sessionID,
-      messageID: assistantMessageID,
+    const response = await client.session.message({
+      path: { id: sessionID, messageID: assistantMessageID },
     })
-    const data = response as { data?: { parts?: unknown[] } }
-    assistantText = extractText(data.data?.parts ?? [])
+    assistantText = extractText(response.data?.parts ?? [])
   } catch (error) {
     console.error("[Mimir] failed to fetch assistant message:", error)
     return

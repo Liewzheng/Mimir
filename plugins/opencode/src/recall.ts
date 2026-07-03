@@ -1,4 +1,4 @@
-import type { Part, UserMessage } from "@opencode-ai/plugin"
+import type { Part, UserMessage } from "@opencode-ai/sdk"
 
 import { recall as mimirRecall } from "./mimir.js"
 
