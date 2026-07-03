@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Skill distillation prototype (`mimir/skills/`):
+  - LCS-based skeleton extraction with variable slots.
+  - Frustration-score tracker with sliding window and cluster pruning.
+  - JSONL skill store with deduplication by ID.
+  - Skill context injection with top-N selection and markdown sanitization.
+  - `mimir/hooks/skill_observer.py` for `PostToolUse` events.
+  - Tests covering extraction, tracking, persistence, store, and injection.
+
+### Changed
+
+- Shell commands are clustered by first meaningful token(s) instead of only the
+  first token, reducing cross-subcommand pollution.
+
+### Security
+
+- Tool commands are redacted before being stored in the skill tracker.
+- Skill output in context injection escapes backticks to avoid prompt injection.
+
 ## [0.3.1] - 2026-07-03
 
 ### Added
